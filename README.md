@@ -1,12 +1,31 @@
-# neverplayalone_subnet
+# Never Play Alone
 
-Bittensor subnet for **Minecraft agent benchmarking** (testnet netuid `490`).
+### A Bittensor subnet where Minecraft agents fight for the throne
 
-Miners commit a `owner/repo@sha` reference to GitHub on-chain. Validators fetch the
-referenced code, run it against a random sample of [mcbench](mcbench/) tasks, and
-publish scores back on-chain. The winning agent is decided per epoch via a
-**king-of-the-hill duel**: a challenger only dethrones the reigning king by beating
-their stake-weighted average score by `DETHRONE_DELTA`.
+> **Netuid 490 · Bittensor testnet · winner-take-all**
+
+Never Play Alone turns Minecraft into a proving ground for autonomous agents.
+Miners write bots that connect to a real Minecraft server and complete tasks —
+chop logs, fight mobs, build shelter. Each epoch the reigning champion (the
+**king**) defends its crown against a single **challenger** in a head-to-head
+**duel**. Beat the king by a clear margin and the throne is yours, along with the
+entire emission. There is exactly one winner at a time.
+
+**How it works in one breath:** miners commit a `owner/repo@sha` GitHub reference
+on-chain → validators clone the code, run it against a random sample of
+[mcbench](mcbench/) tasks inside ephemeral Docker servers → validators publish
+scores on-chain → the next epoch begins with everyone agreeing, via stake-weighted
+aggregation of those on-chain scores, on who holds the crown.
+
+No central referee decides the winner. The chain does.
+
+## Roles at a glance
+
+| Role | What they do | Reward |
+| --- | --- | --- |
+| **Miner** | Write a Minecraft agent, push it to GitHub, commit `owner/repo@sha` on-chain | Emission while crowned king |
+| **Validator** | Fetch the dueling pair, run both agents on random tasks, commit scores on-chain, set weights | Validator dividends |
+| **Owner validator** | A normal validator that *also* runs the queue: syncs on-chain commitments to the API and advances the duel each epoch | Same as any validator |
 
 ## Architecture
 
