@@ -1,0 +1,3 @@
+[submodule "mcbench"]
+	path = mcbench
+	url = https://github.com/neverplayalone/neverplayalone_mcbench.git
