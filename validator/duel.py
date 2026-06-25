@@ -1,114 +1,178 @@
-"""Run a duel: clone repo, pick K random tasks, run each N trials via mcbench."""
+"""Round evaluation helpers backed by mcbench batch execution."""
 from __future__ import annotations
 
+import io
+import json
 import logging
-import random
 import shutil
-import subprocess
-from pathlib import Path
-from typing import Optional
+import tarfile
+from pathlib import Path, PurePosixPath
 
-from .config import (
-    CLONE_ROOT,
-    CLONE_TIMEOUT_SECONDS,
-    SINGLE_TASK_TIMEOUT_SECONDS,
-    TASKS_PER_DUEL,
-    TRIALS_PER_TASK,
-)
+from . import chain
+from .api_client import APIClient
+from .config import MAX_PARALLEL_AGENTS, MISSION_ID, PROXY_ENABLED, WORKSPACE_ROOT
+from .proxy import LocalChutesProxy, configure_mcbench_proxy
 
 log = logging.getLogger(__name__)
 
-MCBENCH_ROOT = Path(__file__).resolve().parent.parent / "mcbench"
-TASKS_DIR = MCBENCH_ROOT / "tasks"
+
+def _safe_dirname(raw: str) -> str:
+    return "".join(ch if ch.isalnum() or ch in "._-" else "_" for ch in raw).strip("_") or "miner"
 
 
-def list_tasks() -> list[Path]:
-    return sorted(TASKS_DIR.glob("**/*.yaml"))
+def _workspace(round_id: int) -> Path:
+    root = Path(WORKSPACE_ROOT).resolve() / f"round_{round_id}"
+    root.mkdir(parents=True, exist_ok=True)
+    return root
 
 
-def pick_random_tasks(k: int = TASKS_PER_DUEL) -> list[Path]:
-    all_tasks = list_tasks()
-    if not all_tasks:
-        log.warning("No tasks found under %s", TASKS_DIR)
-        return []
-    return random.sample(all_tasks, min(k, len(all_tasks)))
+def _safe_extract_tar_gz(payload: bytes, dest: Path) -> None:
+    with tarfile.open(fileobj=io.BytesIO(payload), mode="r:gz") as archive:
+        for member in archive.getmembers():
+            path = PurePosixPath(member.name)
+            if path.is_absolute() or ".." in path.parts:
+                raise ValueError(f"unsafe tar path: {member.name}")
+            if member.issym() or member.islnk():
+                raise ValueError(f"link entries are not allowed in agent archive: {member.name}")
+            if member.isdev():
+                raise ValueError(f"device entries are not allowed in agent archive: {member.name}")
+        archive.extractall(dest)
 
 
-def _git(args: list[str], cwd: Optional[Path] = None, timeout: int = CLONE_TIMEOUT_SECONDS) -> bool:
+def _materialize_agents(api: APIClient, roster: dict, workspace: Path) -> dict[str, dict]:
+    agents_root = workspace / "agents"
+    agents_root.mkdir(parents=True, exist_ok=True)
+    local_entries: dict[str, dict] = {}
+    for entry in roster["entries"]:
+        agent_dir = agents_root / f"{entry['miner_uid']}_{_safe_dirname(entry['miner_hotkey'])}"
+        shutil.rmtree(agent_dir, ignore_errors=True)
+        agent_dir.mkdir(parents=True, exist_ok=True)
+        payload = api.download_bytes(entry["download_url"])
+        _safe_extract_tar_gz(payload, agent_dir)
+        local_entries[entry["miner_hotkey"]] = {
+            **entry,
+            "agent_dir": agent_dir,
+        }
+    return local_entries
+
+
+def _ensure_recording_file(report) -> Path:
+    if report.recording_path is not None and report.recording_path.exists():
+        return report.recording_path
+    fallback = report.output_dir / "recording.mcpr"
+    fallback.write_bytes(b"")
+    return fallback
+
+
+def _write_proxy_usage(report, usage_summary: dict | None) -> None:
+    if not usage_summary:
+        return
+    payload = json.dumps(usage_summary, indent=2)
+    (report.output_dir / "proxy_usage.json").write_text(payload)
+    report_path = report.output_dir / "report.json"
+    if report_path.exists():
+        report_data = json.loads(report_path.read_text())
+        report_data["proxy_usage"] = usage_summary
+        report_path.write_text(json.dumps(report_data, indent=2))
+
+
+def run_round_evaluation(wallet, api: APIClient, round_state: dict) -> dict:
+    from mcbench import AgentMode, AgentSpec, evaluate_multiple_agents
+
+    round_id = int(round_state["round_id"])
+    roster = api.get_round_roster(round_id)
+    workspace = _workspace(round_id)
+    local_entries = _materialize_agents(api, roster, workspace)
+    if not local_entries:
+        log.info("round=%s: roster is empty", round_id)
+        return {"round_id": round_id, "rows": []}
+
+    seed = int(roster["round_seed_hex"], 16)
+    validator_hotkey = wallet.hotkey.ss58_address
+    validator_uid = chain.hotkey_uid(validator_hotkey)
+    stake_weight = chain.self_stake_for_hotkey(
+        validator_hotkey,
+        round_state.get("freeze_block_hash"),
+    )
+
+    agent_specs = [
+        AgentSpec(name=hotkey, path=entry["agent_dir"])
+        for hotkey, entry in local_entries.items()
+    ]
+    proxy = LocalChutesProxy.from_config() if PROXY_ENABLED else None
+    session_tokens: dict[str, str] = {}
+    agent_env_by_name: dict[str, dict[str, str]] = {}
+    if proxy is not None:
+        proxy.start()
+        for miner_hotkey in local_entries:
+            session = proxy.create_session(
+                f"round={round_id}:{miner_hotkey}",
+            )
+            session_tokens[miner_hotkey] = session.token
+            agent_env_by_name[miner_hotkey] = session.env
     try:
-        subprocess.run(
-            ["git", *args],
-            cwd=str(cwd) if cwd else None,
-            check=True,
-            timeout=timeout,
-            capture_output=True,
-        )
-        return True
-    except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as e:
-        log.warning("git %s failed: %s", " ".join(args), e)
-        return False
-
-
-def clone_repo(repo: str, sha: str, dest: Path) -> bool:
-    """Clone `owner/repo` at the given sha. Returns True on success."""
-    url = f"https://github.com/{repo}.git"
-    dest.parent.mkdir(parents=True, exist_ok=True)
-    if dest.exists():
-        shutil.rmtree(dest, ignore_errors=True)
-    if not _git(["clone", "--filter=blob:none", "--no-checkout", url, str(dest)]):
-        return False
-    if not _git(["fetch", "--depth", "1", "origin", sha], cwd=dest):
-        return False
-    if not _git(["checkout", sha], cwd=dest):
-        return False
-    return True
-
-
-def run_single_task(agent_dir: Path, task_file: Path) -> float:
-    """Run one task once via the mcbench Python API. Returns score in [0, 1]."""
-    try:
-        from mcbench.agents import AgentSpec, SubprocessAgent
-        from mcbench.config import load_task
-        from mcbench.runner import run_task
-        from mcbench.grader import grade
-    except ImportError as e:
-        log.error("mcbench not importable: %s", e)
-        return 0.0
-
-    try:
-        task = load_task(task_file)
-        spec = AgentSpec(name=agent_dir.name, path=str(agent_dir))
-        agent = SubprocessAgent(spec)
-        trace = run_task(task, agent)
-        report = grade(task, trace)
-        return float(report.get("score", 0.0))
-    except Exception as e:
-        log.warning("run_task failed for %s: %s", task_file.name, e)
-        return 0.0
-
-
-def evaluate_participant(repo: str, sha: str, tasks: list[Path]) -> float:
-    """Clone the repo, run all tasks N trials each, return aggregate score (sum across tasks).
-
-    Score range: 0..len(tasks). A missing/broken submission returns 0.0.
-    """
-    if not repo or not sha or not tasks:
-        return 0.0
-
-    clone_dir = Path(CLONE_ROOT) / f"{repo.replace('/', '__')}__{sha[:12]}"
-    if not clone_repo(repo, sha, clone_dir):
-        log.warning("clone failed: %s@%s", repo, sha)
-        return 0.0
-
-    try:
-        total = 0.0
-        for task_file in tasks:
-            trial_scores = [
-                run_single_task(clone_dir, task_file) for _ in range(TRIALS_PER_TASK)
-            ]
-            mean = sum(trial_scores) / len(trial_scores) if trial_scores else 0.0
-            total += mean
-            log.info("  %s: trials=%s mean=%.3f", task_file.name, trial_scores, mean)
-        return total
+        with configure_mcbench_proxy(agent_env_by_name):
+            batch_report = evaluate_multiple_agents(
+                agent_specs,
+                mission_id=roster.get("mission_id", MISSION_ID),
+                seed=seed,
+                output_dir=workspace / "mcbench_results",
+                record=True,
+                agent_mode=AgentMode.SANDBOXED,
+                max_parallel=MAX_PARALLEL_AGENTS,
+            )
     finally:
-        shutil.rmtree(clone_dir, ignore_errors=True)
+        if proxy is not None:
+            proxy.stop()
+
+    rows: list[dict] = []
+    for miner_hotkey, entry in local_entries.items():
+        report = batch_report.agents[miner_hotkey]
+        if proxy is not None:
+            _write_proxy_usage(report, proxy.usage_summary(session_tokens[miner_hotkey]))
+        report_path = report.output_dir / "report.json"
+        if not report_path.exists():
+            raise RuntimeError(f"missing report.json for miner {miner_hotkey}")
+        recording_path = _ensure_recording_file(report)
+
+        report_slot = api.request_artifact_slot(
+            round_id=round_id,
+            validator_uid=validator_uid,
+            miner_uid=entry["miner_uid"],
+            miner_hotkey=miner_hotkey,
+            artifact_kind="report_json",
+        )
+        recording_slot = api.request_artifact_slot(
+            round_id=round_id,
+            validator_uid=validator_uid,
+            miner_uid=entry["miner_uid"],
+            miner_hotkey=miner_hotkey,
+            artifact_kind="recording_mcpr",
+        )
+
+        api.upload_bytes(report_slot["upload_url"], report_path.read_bytes())
+        api.upload_bytes(recording_slot["upload_url"], recording_path.read_bytes())
+
+        rows.append(
+            {
+                "miner_uid": entry["miner_uid"],
+                "miner_hotkey": miner_hotkey,
+                "score": float(report.score),
+                "status": report.status,
+                "report_s3_key": report_slot["storage_key"],
+                "recording_s3_key": recording_slot["storage_key"],
+            }
+        )
+
+    api.upload_scoreboard(
+        round_id=round_id,
+        validator_uid=validator_uid,
+        stake_weight=stake_weight,
+        rows=rows,
+    )
+    return {
+        "round_id": round_id,
+        "validator_uid": validator_uid,
+        "stake_weight": stake_weight,
+        "rows": rows,
+    }

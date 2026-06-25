@@ -1,21 +1,15 @@
 # Never Play Alone
 
-### A Bittensor subnet where Minecraft agents fight for the throne
+### A Bittensor subnet for round-based Minecraft agent evaluation
 
 > **Netuid 490 · Bittensor testnet · winner-take-all**
 
 Never Play Alone turns Minecraft into a proving ground for autonomous agents.
-Miners write bots that connect to a real Minecraft server and complete tasks —
-chop logs, fight mobs, build shelter. Each epoch the reigning champion (the
-**king**) defends its crown against a single **challenger** in a head-to-head
-**duel**. Beat the king by a clear margin and the throne is yours, along with the
-entire emission. There is exactly one winner at a time.
-
-**How it works in one breath:** miners commit a `owner/repo@sha` GitHub reference
-on-chain → validators clone the code, run it against a random sample of
-[mcbench](mcbench/) tasks inside ephemeral Docker servers → validators publish
-scores on-chain → the next epoch begins with everyone agreeing, via stake-weighted
-aggregation of those on-chain scores, on who holds the crown.
+Miners upload one `tar.gz` agent package per round to the backend. When a round
+enters evaluation, validators download the same derived roster, run every miner
+against the same deterministic [mcbench](../neverplayalone_mcbench/) task,
+upload artifacts and raw scoreboards, then compute the winner locally using
+validator stake weights and set winner-take-all chain weights.
 
 No central referee decides the winner. The chain does.
 
@@ -23,78 +17,64 @@ No central referee decides the winner. The chain does.
 
 | Role | What they do | Reward |
 | --- | --- | --- |
-| **Miner** | Write a Minecraft agent, push it to GitHub, commit `owner/repo@sha` on-chain | Emission while crowned king |
-| **Validator** | Fetch the dueling pair, run both agents on random tasks, commit scores on-chain, set weights | Validator dividends |
-| **Owner validator** | A normal validator that *also* runs the queue: syncs on-chain commitments to the API and advances the duel each epoch | Same as any validator |
-
+| **Miner** | Upload one `tar.gz` agent package for the current submission round | Emission if ranked first |
+| **Validator** | Download the round roster, run all miners with mcbench, upload scoreboards, compute the winner, set weights | Validator dividends |
 ## Architecture
 
 ```
-        api.neverplayalone.ai               subtensor (netuid 490)
+        neverplayalone_api                  subtensor (netuid 490)
         ──────────────────                  ──────────────────────
               │                                       │
-              │ /duel/current                         │ get_commitment / set_commitment
-              │ /duel/result                          │ set_weights
-              │ /queue/*  (owner)                     │
+              │ submission intake                     │ metagraph / stakes
+              │ derived round roster                  │ set_weights
+              │ validator artifacts + scoreboards     │
+              │ consensus result observability        │
               │                                       │
    ┌──────────┴──────────┐                ┌───────────┴────────────┐
-   │ owner validator     │                │ other validators       │
-   │  + queue management │                │  - poll API for pair   │
-   │  + duel like everyone                │  - run duel via mcbench│
-   └──────────┬──────────┘                │  - commit score on-chain│
-              │                           └────────────────────────┘
-              │ git clone owner/repo@sha
-              │
-              ▼
-          mcbench tasks (Paper server in Docker)
+   │ validators          │                │ miners                 │
+   │  - poll current     │                │  - submit tar.gz       │
+   │    round windows    │                │    for open round      │
+   │  - download roster  │                └────────────────────────┘
+   │  - run mcbench batch│
+   │  - upload results   │
+   │  - compute winner   │
+   └─────────────────────┘
 ```
 
 ## Layout
 
 ```
 neverplayalone_subnet/
-├── api/        # FastAPI service backing api.neverplayalone.ai
-├── cli/        # `npa` CLI for miners (commit code on-chain)
-├── validator/  # validator binary (handles owner + non-owner role)
-├── scripts/    # ops helpers (init_db, dump_state, …)
-└── mcbench/    # submodule — task harness + grader
+├── cli/        # `npa` CLI for miner submission
+├── validator/  # validator binary + backend client
+└── README.md
 ```
 
 ## Install
 
 ```bash
-git clone --recursive https://github.com/<this-repo>
+git clone https://github.com/<this-repo>
 cd neverplayalone_subnet
-pip install -e mcbench
 pip install -e .
 ```
 
-`mcbench` requires Docker (Paper server) — see `mcbench/README.md`.
+Validators also need `neverplayalone_mcbench` installed and Docker available.
+For LLM-based miner agents, validators also need a `CHUTES_API_KEY`.
 
-## Run the API (operator)
-
-```bash
-python scripts/init_db.py
-NPA_API_HOST=0.0.0.0 NPA_API_PORT=8000 npa-api
-```
-
-The owner-only endpoints (`/queue/enqueue`, `/queue/remove`, `/duel/advance`)
-require requests signed by the hotkey whose ss58 matches `OWNER_HOTKEY` in
-both `api/config.py` and `validator/config.py`. Replace the placeholder
-before deploy.
+The backend lives in the separate `neverplayalone_api` repository.
 
 ## Be a miner
 
-1. Build an mcbench-compatible agent (see `mcbench/agents_examples/`).
-2. Push it to GitHub.
+1. Build a Node-based mcbench-compatible agent and package it as `tar.gz`.
 3. Register on netuid 490 testnet.
-4. Commit the reference on-chain:
+4. Submit the archive to the backend:
 
 ```bash
-npa commit owner/my-agent-repo@<full-sha>
+npa submit ./agent.tar.gz --wallet miner --hotkey hk1
 ```
 
-Validators will pick it up on the next epoch.
+Validators will pick it up when the current submission round closes and the
+round enters evaluation.
 
 ## Run a validator
 
@@ -106,38 +86,29 @@ btcli subnet register --netuid 490 --subtensor.network test --wallet.name valida
 NPA_WALLET=validator NPA_HOTKEY=hk1 npa-validator
 ```
 
-If your hotkey matches `OWNER_HOTKEY`, the validator additionally runs the
-queue-management loop (syncs on-chain miner commitments to the API, advances
-the duel each epoch). Otherwise it just polls the API and duels.
+The validator also runs a local OpenAI-compatible proxy for miner containers.
+Miner sandboxes get no direct internet access; they can only reach Minecraft and
+this proxy, which forwards to Chutes and enforces a per-run spend cap.
 
 ## Consensus mechanism
 
-Each epoch (Bittensor tempo boundary):
+Each round:
 
-1. All validators read the **same** `(king, challenger)` pair from
-   `GET /duel/current`. The pair is server-stamped for the epoch — the API
-   never changes it mid-epoch.
-2. Each validator runs the duel locally: clone both repos, pick K random
-   tasks from `mcbench/tasks/`, run N trials each, aggregate scores.
-3. Each validator commits its scores on-chain via `set_commitment` with a
-   compact JSON payload:
-   ```
-   {"v":1,"e":<epoch>,"k":<king_uid>,"ks":<king_score>,"c":<challenger_uid>,"cs":<challenger_score>}
-   ```
-4. **At the start of the next epoch**, every validator independently:
-   - Reads all on-chain score commits from the previous epoch.
-   - Filters to commits whose `(k, c)` matches the majority-reported pair.
-   - Computes stake-weighted average king/challenger scores.
-   - If `avg_challenger >= avg_king + DETHRONE_DELTA`, the challenger wins.
-   - Sets a winner-take-all weight vector (`winner -> 1.0`, all others 0).
-
-Because the aggregation is a deterministic function of on-chain state, all
-honest validators produce identical weight vectors — high vtrust without
-any inter-validator coordination beyond the chain itself.
-
-Validators that don't commit scores (e.g. weight copiers) contribute zero
-signal and are naturally excluded from the verdict. There is no quorum: if
-nobody committed, the king holds.
+1. Miners upload one `tar.gz` agent package before the round freezes.
+2. At evaluation start, the backend exposes one roster manifest derived from
+   accepted submissions finalized before the round cutoff, with:
+   - round id
+   - round seed
+   - every admitted miner submission
+3. All validators download the same roster and evaluate every miner with
+   `mcbench.evaluate_multiple_agents(...)`.
+4. Every validator uploads:
+   - one `report.json` per miner
+   - one `recording.mcpr` per miner
+   - one raw scoreboard JSON for the round
+5. After the scoreboard deadline, every validator downloads all scoreboards,
+   applies stake-weighted averaging, picks the top miner, and sets a
+   winner-take-all weight vector on chain.
 
 ## Config knobs
 
@@ -149,16 +120,15 @@ Set via environment variables.
 | `NPA_API_URL` | `https://api.neverplayalone.ai` | API base URL |
 | `NPA_WALLET` | `default` | Wallet name |
 | `NPA_HOTKEY` | `default` | Hotkey name |
-| `NPA_TASKS_PER_DUEL` | `5` | K tasks per duel |
-| `NPA_TRIALS_PER_TASK` | `3` | N trials per task |
-| `NPA_DETHRONE_DELTA` | `1.0` | Score margin needed to dethrone |
+| `NPA_MISSION_ID` | `resource_gathering` | mcbench mission id |
 | `NPA_LOOP_POLL_SECONDS` | `12` | Validator loop poll cadence |
-| `NPA_CLONE_ROOT` | `/tmp/npa_clones` | Where validators clone miner code |
-| `NPA_DB_PATH` | `npa_api.db` | API sqlite path |
-| `NPA_API_HOST` | `0.0.0.0` | API bind host |
-| `NPA_API_PORT` | `8000` | API bind port |
-
-## Status
-
-MVP. The owner hotkey is a placeholder; replace `OWNER_HOTKEY` in
-`api/config.py` and `validator/config.py` before deploy.
+| `NPA_WORKSPACE_ROOT` | `/tmp/npa_validator` | Local validator round workspace |
+| `NPA_MAX_PARALLEL_AGENTS` | `2` | Parallel mcbench agent slots |
+| `CHUTES_API_KEY` | unset | Upstream Chutes API key used by the validator proxy |
+| `NPA_PROXY_ENABLED` | `1` | Enable validator-local Chutes proxy injection |
+| `NPA_PROXY_PORT` | `18080` | Host port exposed to miner containers as the local proxy |
+| `NPA_PROXY_ALLOWED_MODELS` | empty | Optional comma-separated Chutes model allowlist |
+| `NPA_PROXY_DEFAULT_INPUT_PRICE_PER_1M_USD` | `0` | Fallback input token price used for spend control |
+| `NPA_PROXY_DEFAULT_OUTPUT_PRICE_PER_1M_USD` | `0` | Fallback output token price used for spend control |
+| `NPA_PROXY_MODEL_PRICES_JSON` | empty | Optional per-model pricing JSON |
+| `NPA_PROXY_MAX_TOTAL_SPEND_USD` | `1.0` | Max total proxy spend per miner run |

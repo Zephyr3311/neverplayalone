@@ -1,10 +1,7 @@
-"""`npa` CLI for miners.
-
-    npa commit owner/repo@sha [--wallet NAME] [--hotkey NAME]
-"""
+"""`npa` CLI for miners."""
 from __future__ import annotations
 
-import sys
+from pathlib import Path
 
 import typer
 
@@ -12,66 +9,71 @@ app = typer.Typer(help="Never Play Alone subnet CLI")
 
 
 @app.command()
-def commit(
-    target: str = typer.Argument(..., help="GitHub reference: owner/repo@sha"),
+def submit(
+    archive_path: Path = typer.Argument(..., exists=True, dir_okay=False, readable=True),
     wallet_name: str = typer.Option("default", "--wallet", help="Bittensor wallet name"),
     wallet_hotkey: str = typer.Option("default", "--hotkey", help="Bittensor hotkey name"),
 ) -> None:
-    """Publish your agent code (owner/repo@sha) on-chain so validators can fetch and run it."""
-    if "@" not in target:
-        typer.echo("error: target must be in 'owner/repo@sha' format", err=True)
+    """Upload a round submission tarball to the backend."""
+    from validator import chain
+    from validator.api_client import APIClient
+
+    if archive_path.suffixes[-2:] != [".tar", ".gz"]:
+        typer.echo("error: submission archive must be a .tar.gz file", err=True)
         raise typer.Exit(2)
-    repo, sha = target.rsplit("@", 1)
-    if "/" not in repo or not sha:
-        typer.echo("error: repo must be 'owner/repo' and sha must be non-empty", err=True)
-        raise typer.Exit(2)
 
-    import bittensor as bt
-    from validator.config import NETUID, NETWORK
+    wallet = chain.make_wallet(wallet_name, wallet_hotkey)
+    miner_uid = chain.hotkey_uid(wallet.hotkey.ss58_address)
+    api = APIClient(wallet)
+    try:
+        slot = api.create_submission_slot(miner_uid=miner_uid, filename=archive_path.name)
+        api.upload_submission_file(slot["upload_url"], archive_path)
+        result = api.finalize_submission(slot["submission_id"])
+    finally:
+        api.close()
 
-    wallet = bt.wallet(name=wallet_name, hotkey=wallet_hotkey)
-    subtensor = bt.subtensor(network=NETWORK)
-
-    payload = f"{repo}@{sha}"
-    typer.echo(f"committing: {payload}")
-    typer.echo(f"hotkey:     {wallet.hotkey.ss58_address}")
-    typer.echo(f"netuid:     {NETUID}")
-    typer.echo(f"network:    {NETWORK}")
-
-    subtensor.set_commitment(wallet=wallet, netuid=NETUID, data=payload)
-    typer.echo("committed.")
+    typer.echo(f"submission_id: {result['submission_id']}")
+    typer.echo(f"round_id:      {result['round_id']}")
+    typer.echo(f"miner_uid:     {result['miner_uid']}")
+    typer.echo(f"status:        {result['status']}")
+    if result.get("accepted"):
+        typer.echo(f"sha256:        {result['sha256']}")
+        typer.echo(f"size_bytes:    {result['size_bytes']}")
+    else:
+        typer.echo(f"rejection:     {result.get('rejection_reason')}")
 
 
 @app.command()
 def status(
     api_url: str = typer.Option(None, "--api", help="Override NPA_API_URL"),
 ) -> None:
-    """Show the current duel pair from the API."""
+    """Show the current submission round from the backend."""
     import httpx
 
     from validator.config import API_URL
 
     url = (api_url or API_URL).rstrip("/")
     try:
-        r = httpx.get(f"{url}/duel/current", timeout=10.0)
-        r.raise_for_status()
-    except Exception as e:
-        typer.echo(f"failed to reach {url}: {e}", err=True)
+        response = httpx.get(f"{url}/miner/rounds/current", timeout=10.0)
+        response.raise_for_status()
+    except Exception as exc:
+        typer.echo(f"failed to reach {url}: {exc}", err=True)
         raise typer.Exit(1)
 
-    data = r.json()
-    typer.echo(f"epoch:      {data.get('epoch_id')}")
-    king = data.get("king")
-    chal = data.get("challenger")
-    if king:
-        typer.echo(f"king:       uid={king['uid']} {king['repo']}@{king['sha'][:12]}")
-    else:
-        typer.echo("king:       (none)")
-    if chal:
-        typer.echo(f"challenger: uid={chal['uid']} {chal['repo']}@{chal['sha'][:12]}")
-    else:
-        typer.echo("challenger: (none)")
+    data = response.json()
+    round_row = data.get("submission_round")
+    if not round_row:
+        typer.echo("submission_round: (none)")
+        return
+
+    typer.echo(f"round_id:             {round_row['round_id']}")
+    typer.echo(f"status:               {round_row['status']}")
+    typer.echo(f"submission_open_at:   {round_row['submission_open_at']}")
+    typer.echo(f"evaluation_start_at:  {round_row['evaluation_start_at']}")
+    typer.echo(f"scoreboard_deadline:  {round_row['scoreboard_deadline_at']}")
+    typer.echo(f"round_end_at:         {round_row['round_end_at']}")
 
 
 if __name__ == "__main__":
     app()
+

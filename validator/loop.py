@@ -1,210 +1,115 @@
-"""Main validator loop.
-
-On every detected epoch boundary:
-  1. Settle previous epoch — aggregate on-chain score commits with stake weighting,
-     decide if the challenger dethroned the king (delta gate), set Yuma weights.
-  2. If running as owner — sync new miner commitments to API queue and advance.
-  3. Read the current (king, challenger) pair from the API.
-  4. Pick K random tasks from mcbench/tasks/, run king + challenger N trials each.
-  5. Submit telemetry to API and commit scores on-chain.
-"""
+"""Main validator loop for round-based backend coordination."""
 from __future__ import annotations
 
 import logging
 import time
-from collections import Counter
 from typing import Optional
 
 from . import chain
 from .api_client import APIClient
-from .config import DETHRONE_DELTA, LOOP_POLL_SECONDS, OWNER_HOTKEY
-from .duel import evaluate_participant, pick_random_tasks
-from .owner import owner_epoch_tick
+from .config import LOOP_POLL_SECONDS
+from .duel import run_round_evaluation
 
 log = logging.getLogger(__name__)
 
 
-def aggregate_verdict(
-    commits: dict[str, dict],
-    stakes: dict[str, float],
-    king_uid: int,
-    challenger_uid: int,
-    delta: float,
-) -> tuple[int, float, float]:
-    """Stake-weighted aggregate of validator score commits.
-
-    Returns (winner_uid, weighted_king_score, weighted_challenger_score).
-    On no valid commits, king holds and scores are 0.0.
-    """
-    valid = [
-        (h, c)
-        for h, c in commits.items()
-        if c.get("k") == king_uid and c.get("c") == challenger_uid
-    ]
-    if not valid:
-        return king_uid, 0.0, 0.0
-
-    total_stake = sum(stakes.get(h, 0.0) for h, _ in valid)
-    if total_stake <= 0:
-        return king_uid, 0.0, 0.0
-
-    w_king = sum(stakes.get(h, 0.0) * c["ks"] for h, c in valid) / total_stake
-    w_chal = sum(stakes.get(h, 0.0) * c["cs"] for h, c in valid) / total_stake
-
-    new_king = challenger_uid if w_chal >= w_king + delta else king_uid
-    return new_king, w_king, w_chal
-
-
-def _majority_pair(score_commits: dict[str, dict]) -> Optional[tuple[int, int]]:
-    """Most-committed (king_uid, challenger_uid) pair across validators."""
-    pairs = Counter((c["k"], c["c"]) for c in score_commits.values())
-    if not pairs:
-        return None
-    (pair, _), = pairs.most_common(1)
-    return pair
-
-
-def settle_previous_epoch(wallet, previous_epoch: int) -> Optional[int]:
-    """Read commits from `previous_epoch`, aggregate, set weights. Returns new-king uid."""
-    raw_commits = chain.get_all_commitments()
-
-    # Parse and filter to score commits from the target epoch only.
-    epoch_commits: dict[str, dict] = {}
-    for hotkey, raw in raw_commits.items():
-        parsed = chain.parse_score_commit(raw)
-        if parsed is not None and parsed.get("e") == previous_epoch:
-            epoch_commits[hotkey] = parsed
-
-    if not epoch_commits:
-        log.info("epoch=%s: no score commits → king holds", previous_epoch)
+def _weighted_top_miner(scoreboards: list[dict], freeze_block_hash: str | None) -> tuple[int, str] | None:
+    if not scoreboards:
         return None
 
-    pair = _majority_pair(epoch_commits)
-    if pair is None:
+    try:
+        stakes = (
+            chain.stake_by_hotkey_for_block_hash(freeze_block_hash)
+            if freeze_block_hash
+            else chain.stake_by_hotkey()
+        )
+    except Exception as exc:
+        log.warning("stake lookup by freeze block failed, using uploaded stake weights: %s", exc)
+        stakes = {}
+
+    weighted_totals: dict[tuple[int, str], float] = {}
+    weight_totals: dict[tuple[int, str], float] = {}
+
+    for scoreboard in scoreboards:
+        validator_hotkey = scoreboard["validator_hotkey"]
+        weight = float(stakes.get(validator_hotkey, scoreboard.get("stake_weight", 0.0)))
+        if weight <= 0:
+            continue
+        for row in scoreboard["rows"]:
+            key = (int(row["miner_uid"]), row["miner_hotkey"])
+            weighted_totals[key] = weighted_totals.get(key, 0.0) + weight * float(row["score"])
+            weight_totals[key] = weight_totals.get(key, 0.0) + weight
+
+    if not weighted_totals:
         return None
-    king_uid, challenger_uid = pair
 
-    mg = chain.get_metagraph()
-    stakes = {hotkey: float(mg.S[uid]) for uid, hotkey in enumerate(mg.hotkeys)}
+    ranking = sorted(
+        (
+            (uid, hotkey, weighted_totals[(uid, hotkey)] / weight_totals[(uid, hotkey)])
+            for uid, hotkey in weighted_totals
+            if weight_totals[(uid, hotkey)] > 0
+        ),
+        key=lambda item: (-item[2], item[0], item[1]),
+    )
+    winner_uid, winner_hotkey, _ = ranking[0]
+    return winner_uid, winner_hotkey
 
-    new_king_uid, w_king, w_chal = aggregate_verdict(
-        epoch_commits, stakes, king_uid, challenger_uid, DETHRONE_DELTA
+
+def _process_consensus(wallet, api: APIClient, round_state: dict) -> Optional[tuple[int, str]]:
+    scoreboards = api.list_round_scoreboards(round_state["round_id"])
+    winner = _weighted_top_miner(scoreboards, round_state.get("freeze_block_hash"))
+    if winner is None:
+        log.info("round=%s: no valid scoreboards yet for consensus", round_state["round_id"])
+        return None
+
+    winner_uid, winner_hotkey = winner
+    validator_uid = chain.hotkey_uid(wallet.hotkey.ss58_address)
+    chain.set_winner_weights(wallet, winner_uid)
+    api.upload_consensus_result(
+        round_id=round_state["round_id"],
+        validator_uid=validator_uid,
+        top_miner_uid=winner_uid,
+        top_miner_hotkey=winner_hotkey,
     )
     log.info(
-        "epoch=%s verdict: pair=(king=%s, chal=%s) scores=(%.3f vs %.3f) winner_uid=%s",
-        previous_epoch, king_uid, challenger_uid, w_king, w_chal, new_king_uid,
+        "round=%s consensus winner uid=%s hotkey=%s",
+        round_state["round_id"],
+        winner_uid,
+        winner_hotkey,
     )
-
-    try:
-        chain.set_winner_weights(wallet, new_king_uid)
-    except Exception as e:
-        log.warning("set_weights failed: %s", e)
-
-    return new_king_uid
-
-
-def run_duel_for_epoch(wallet, api: APIClient, epoch_id: int) -> None:
-    """Read pair from API, run duel, submit telemetry, commit scores on-chain."""
-    try:
-        duel = api.get_current_duel()
-    except Exception as e:
-        log.warning("could not fetch /duel/current: %s", e)
-        return
-
-    if duel.get("epoch_id") != epoch_id:
-        log.warning(
-            "API epoch=%s vs local=%s — running against API's pair anyway",
-            duel.get("epoch_id"), epoch_id,
-        )
-
-    king = duel.get("king")
-    challenger = duel.get("challenger")
-    if not challenger:
-        log.info("epoch=%s: no challenger this epoch", epoch_id)
-        return
-
-    tasks = pick_random_tasks()
-    log.info("epoch=%s tasks: %s", epoch_id, [t.name for t in tasks])
-
-    king_score = 0.0
-    if king:
-        log.info("evaluating king uid=%s %s@%s", king["uid"], king["repo"], king["sha"][:12])
-        king_score = evaluate_participant(king["repo"], king["sha"], tasks)
-
-    log.info(
-        "evaluating challenger uid=%s %s@%s",
-        challenger["uid"], challenger["repo"], challenger["sha"][:12],
-    )
-    challenger_score = evaluate_participant(challenger["repo"], challenger["sha"], tasks)
-
-    log.info(
-        "epoch=%s results: king_score=%.3f challenger_score=%.3f",
-        epoch_id, king_score, challenger_score,
-    )
-
-    # Telemetry to API (non-authoritative).
-    try:
-        api.submit_result(
-            epoch_id=epoch_id,
-            king_hotkey=king["hotkey"] if king else None,
-            king_score=king_score,
-            challenger_hotkey=challenger["hotkey"],
-            challenger_score=challenger_score,
-        )
-    except Exception as e:
-        log.warning("submit_result failed: %s", e)
-
-    # Authoritative: commit scores on-chain for next-epoch consensus.
-    try:
-        chain.commit_score(
-            wallet=wallet,
-            epoch_id=epoch_id,
-            king_uid=king["uid"] if king else -1,
-            king_score=king_score,
-            challenger_uid=challenger["uid"],
-            challenger_score=challenger_score,
-        )
-    except Exception as e:
-        log.warning("commit_score failed: %s", e)
+    return winner
 
 
 def main_loop(wallet, api: APIClient) -> None:
-    is_owner = wallet.hotkey.ss58_address == OWNER_HOTKEY
-    last_handled_epoch: Optional[int] = None
-    log.info("loop started (owner=%s)", is_owner)
+    evaluated_rounds: set[int] = set()
+    consensus_rounds: set[int] = set()
+    log.info("loop started")
 
     while True:
         try:
-            current = chain.current_epoch()
-        except Exception as e:
-            log.warning("current_epoch failed: %s", e)
+            rounds = api.get_current_rounds()
+        except Exception as exc:
+            log.warning("get_current_rounds failed: %s", exc)
             time.sleep(LOOP_POLL_SECONDS)
             continue
 
-        if current == last_handled_epoch:
-            time.sleep(LOOP_POLL_SECONDS)
-            continue
+        evaluating_round = rounds.get("evaluating_round")
+        if evaluating_round:
+            round_id = int(evaluating_round["round_id"])
+            if round_id not in evaluated_rounds:
+                try:
+                    run_round_evaluation(wallet, api, evaluating_round)
+                    evaluated_rounds.add(round_id)
+                    log.info("round=%s evaluation uploaded", round_id)
+                except Exception as exc:
+                    log.warning("round=%s evaluation failed: %s", round_id, exc)
 
-        log.info("new epoch detected: %s", current)
+            if time.time() >= float(evaluating_round["scoreboard_deadline_at"]) and round_id not in consensus_rounds:
+                try:
+                    winner = _process_consensus(wallet, api, evaluating_round)
+                    if winner is not None:
+                        consensus_rounds.add(round_id)
+                except Exception as exc:
+                    log.warning("round=%s consensus failed: %s", round_id, exc)
 
-        # 1. Settle previous epoch and set weights.
-        if last_handled_epoch is not None:
-            try:
-                settle_previous_epoch(wallet, last_handled_epoch)
-            except Exception as e:
-                log.warning("settle_previous_epoch failed: %s", e)
-
-        # 2. Owner: sync queue + advance API to next pair.
-        if is_owner:
-            try:
-                owner_epoch_tick(api, current)
-            except Exception as e:
-                log.warning("owner_epoch_tick failed: %s", e)
-
-        # 3. Run duel for current epoch (and commit scores).
-        try:
-            run_duel_for_epoch(wallet, api, current)
-        except Exception as e:
-            log.warning("run_duel_for_epoch failed: %s", e)
-
-        last_handled_epoch = current
+        time.sleep(LOOP_POLL_SECONDS)
