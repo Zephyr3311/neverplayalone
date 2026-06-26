@@ -28,6 +28,3 @@ PROXY_MAX_TOTAL_SPEND_USD = float(os.environ.get("NPA_PROXY_MAX_TOTAL_SPEND_USD"
 PROXY_UPSTREAM_TIMEOUT_SECONDS = float(
     os.environ.get("NPA_PROXY_UPSTREAM_TIMEOUT_SECONDS", "60")
 )
-
-# Keep committed payload versioned if validator-side chain payloads change later.
-COMMIT_VERSION = 1
