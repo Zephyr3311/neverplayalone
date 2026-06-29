@@ -1,0 +1,63 @@
+# Never Play Alone validator — one-command run.
+#
+# Usage:
+#   cp .env.example .env
+#   # then edit NPA_BT_WALLET_DIR / NPA_WALLET / NPA_HOTKEY
+#   # enable the proxy only when you have CHUTES_API_KEY
+#   docker compose up --build
+#
+# Prerequisite: the mcbench submodule must be checked out:
+#   git submodule update --init --recursive
+#
+# ── How this works ──────────────────────────────────────────────────
+# The validator container is a Docker *client*. It mounts the host's Docker
+# socket so the Minecraft/agent containers it spawns via mcbench actually run
+# on the host daemon. This gives the container root-equivalent access on the
+# host — the standard tradeoff for "container that runs other containers".
+
+services:
+  validator:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: neverplayalone-validator:latest
+    container_name: npa-validator
+    restart: unless-stopped
+
+    # Talk to the host Docker daemon to spawn Minecraft/agent containers.
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      # Bind the host wallet directory created by btcli into the container.
+      - ${NPA_BT_WALLET_DIR}:/root/.bittensor
+      # Workspace for round evaluation artifacts (rosters, recordings, reports).
+      - npa-workspace:/workspace
+
+    # Proxy networking: miner sandboxes reach the Chutes proxy through
+    # host.docker.internal:host-gateway → host's published :18080 → this container.
+    # `host-gateway` resolves to the host's bridge IP from inside sandboxes.
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+
+    ports:
+      - "18080:18080"
+
+    env_file:
+      - .env
+
+    environment:
+      # Make the workspace path match the mounted volume.
+      NPA_WORKSPACE_ROOT: /workspace
+      NPA_PROXY_BIND_HOST: 0.0.0.0
+
+    # `dockerd-rootless-setuptool.sh`-style setups may need a different group;
+    # for a standard Docker install the socket is mode 660 root:docker. We
+    # don't run as root-free here because spawning sibling containers via the
+    # socket needs host-level docker access anyway.
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+volumes:
+  npa-workspace:

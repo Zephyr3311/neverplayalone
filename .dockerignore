@@ -1,0 +1,37 @@
+# Version control
+.git
+.gitignore
+.gitmodules
+
+# Python caches / build artifacts
+__pycache__/
+*.py[codz]
+*.egg-info/
+.eggs/
+build/
+dist/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# Editor / OS
+.vscode/
+.idea/
+.DS_Store
+
+# Local secrets / runtime state
+.env
+.env.local
+*.db
+*.sqlite3
+storage/
+npa_backend.db
+
+# mcbench runtime artifacts (kept out of the image to keep it lean)
+mcbench/results/
+mcbench/tools/recorder/node_modules/

@@ -45,7 +45,7 @@ No central referee decides the winner. The chain does.
 
 ```
 neverplayalone_subnet/
-├── cli/        # `npa` CLI for miner submission
+├── miner/      # `npa` CLI for miner submission
 ├── validator/  # validator binary + backend client
 └── README.md
 ```
@@ -58,7 +58,7 @@ cd neverplayalone_subnet
 pip install -e .
 ```
 
-Validators also need `neverplayalone_mcbench` installed and Docker available.
+Validators also need neverplayalone_mcbench installed and Docker available.
 For LLM-based miner agents, validators also need a `CHUTES_API_KEY`.
 
 The backend lives in the separate `neverplayalone_api` repository.
@@ -83,7 +83,12 @@ btcli wallet new_coldkey --wallet.name validator
 btcli wallet new_hotkey --wallet.name validator --wallet.hotkey hk1
 btcli subnet register --netuid 490 --subtensor.network test --wallet.name validator --wallet.hotkey hk1
 
-NPA_WALLET=validator NPA_HOTKEY=hk1 npa-validator
+cp .env.example .env
+# edit .env:
+#   - set NPA_BT_WALLET_DIR to your host ~/.bittensor path
+#   - set NPA_WALLET / NPA_HOTKEY
+#   - set CHUTES_API_KEY and NPA_PROXY_ENABLED=1 only if needed
+docker compose up --build
 ```
 
 The validator also runs a local OpenAI-compatible proxy for miner containers.
