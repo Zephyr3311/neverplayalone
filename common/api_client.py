@@ -102,6 +102,8 @@ class APIClient:
         *,
         round_id: int,
         validator_uid: int,
+        entry_id: str,
+        entry_kind: str,
         miner_uid: int,
         miner_hotkey: str,
         artifact_kind: str,
@@ -111,6 +113,8 @@ class APIClient:
             {
                 "round_id": round_id,
                 "validator_uid": validator_uid,
+                "entry_id": entry_id,
+                "entry_kind": entry_kind,
                 "miner_uid": miner_uid,
                 "miner_hotkey": miner_hotkey,
                 "artifact_kind": artifact_kind,
@@ -148,6 +152,11 @@ class APIClient:
         validator_uid: int,
         top_miner_uid: int,
         top_miner_hotkey: str,
+        winner_entry_id: str | None = None,
+        winner_entry_kind: str | None = None,
+        source_submission_id: str | None = None,
+        source_round_id: int | None = None,
+        champion_kept: bool = False,
     ) -> dict:
         return self._post_signed(
             "/validator/consensus-results",
@@ -156,5 +165,10 @@ class APIClient:
                 "validator_uid": validator_uid,
                 "top_miner_uid": top_miner_uid,
                 "top_miner_hotkey": top_miner_hotkey,
+                "winner_entry_id": winner_entry_id,
+                "winner_entry_kind": winner_entry_kind,
+                "source_submission_id": source_submission_id,
+                "source_round_id": source_round_id,
+                "champion_kept": champion_kept,
             },
         )

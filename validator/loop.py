@@ -13,9 +13,9 @@ from .round_evaluation import run_round_evaluation
 log = logging.getLogger(__name__)
 
 
-def _weighted_top_miner(scoreboards: list[dict], freeze_block_hash: str | None) -> tuple[int, str] | None:
+def _weighted_entry_scores(scoreboards: list[dict], freeze_block_hash: str | None) -> dict[str, dict]:
     if not scoreboards:
-        return None
+        return {}
 
     try:
         stakes = (
@@ -27,8 +27,9 @@ def _weighted_top_miner(scoreboards: list[dict], freeze_block_hash: str | None) 
         log.warning("stake lookup by freeze block failed, using uploaded stake weights: %s", exc)
         stakes = {}
 
-    weighted_totals: dict[tuple[int, str], float] = {}
-    weight_totals: dict[tuple[int, str], float] = {}
+    weighted_totals: dict[str, float] = {}
+    weight_totals: dict[str, float] = {}
+    meta: dict[str, dict] = {}
 
     for scoreboard in scoreboards:
         validator_hotkey = scoreboard["validator_hotkey"]
@@ -36,49 +37,93 @@ def _weighted_top_miner(scoreboards: list[dict], freeze_block_hash: str | None) 
         if weight <= 0:
             continue
         for row in scoreboard["rows"]:
-            key = (int(row["miner_uid"]), row["miner_hotkey"])
-            weighted_totals[key] = weighted_totals.get(key, 0.0) + weight * float(row["score"])
-            weight_totals[key] = weight_totals.get(key, 0.0) + weight
+            entry_id = row.get("entry_id") or row["miner_hotkey"]
+            weighted_totals[entry_id] = weighted_totals.get(entry_id, 0.0) + weight * float(row["score"])
+            weight_totals[entry_id] = weight_totals.get(entry_id, 0.0) + weight
+            if entry_id not in meta:
+                meta[entry_id] = {
+                    "entry_id": entry_id,
+                    "entry_kind": row.get("entry_kind", "submission"),
+                    "miner_uid": int(row["miner_uid"]),
+                    "miner_hotkey": row["miner_hotkey"],
+                    "submission_id": row.get("submission_id"),
+                    "source_round_id": row.get("source_round_id"),
+                }
 
-    if not weighted_totals:
-        return None
+    entries: dict[str, dict] = {}
+    for entry_id, total_weight in weight_totals.items():
+        if total_weight <= 0:
+            continue
+        entries[entry_id] = {**meta[entry_id], "score": weighted_totals[entry_id] / total_weight}
+    return entries
 
-    ranking = sorted(
-        (
-            (uid, hotkey, weighted_totals[(uid, hotkey)] / weight_totals[(uid, hotkey)])
-            for uid, hotkey in weighted_totals
-            if weight_totals[(uid, hotkey)] > 0
-        ),
-        key=lambda item: (-item[2], item[0], item[1]),
+
+def _select_winner(entries: dict[str, dict], margin: float) -> tuple[Optional[dict], bool]:
+    if not entries:
+        return None, False
+    ranked = sorted(
+        entries.values(),
+        key=lambda e: (-e["score"], e["miner_uid"], e["entry_id"]),
     )
-    winner_uid, winner_hotkey, _ = ranking[0]
-    return winner_uid, winner_hotkey
+    champion = next((e for e in ranked if e["entry_kind"] == "champion_defense"), None)
+    if champion is None:
+        return ranked[0], False
+    challengers = [e for e in ranked if e["entry_kind"] != "champion_defense"]
+    best_challenger = challengers[0] if challengers else None
+    if best_challenger is None:
+        return champion, True
+    if best_challenger["score"] > champion["score"] + margin:
+        return best_challenger, False
+    return champion, True
+
+
+def _round_margin(api: APIClient, round_id: int) -> float:
+    try:
+        roster = api.get_round_roster(round_id)
+        value = roster.get("champion_margin")
+        if value is not None:
+            return float(value)
+    except Exception as exc:
+        log.warning("round=%s: could not read champion margin from roster: %s", round_id, exc)
+    return 0.0
 
 
 def _process_consensus(wallet, api: APIClient, round_state: dict) -> Optional[tuple[int, str]]:
     round_id = int(round_state["round_id"])
     scoreboards = api.list_round_scoreboards(round_id)
-    winner = _weighted_top_miner(scoreboards, round_state.get("freeze_block_hash"))
-    if winner is None:
+    entries = _weighted_entry_scores(scoreboards, round_state.get("freeze_block_hash"))
+    if not entries:
         log.info("round=%s: no valid scoreboards yet for consensus", round_id)
         return None
 
-    winner_uid, winner_hotkey = winner
+    winner, champion_kept = _select_winner(entries, _round_margin(api, round_id))
+    if winner is None:
+        return None
+
+    winner_uid = int(winner["miner_uid"])
+    winner_hotkey = winner["miner_hotkey"]
     validator_uid = chain.hotkey_uid(wallet.hotkey.ss58_address)
     api.upload_consensus_result(
         round_id=round_id,
         validator_uid=validator_uid,
         top_miner_uid=winner_uid,
         top_miner_hotkey=winner_hotkey,
+        winner_entry_id=winner["entry_id"],
+        winner_entry_kind=winner["entry_kind"],
+        source_submission_id=winner.get("submission_id"),
+        source_round_id=winner.get("source_round_id"),
+        champion_kept=champion_kept,
     )
     chain.set_winner_weights(wallet, winner_uid)
     log.info(
-        "round=%s consensus winner uid=%s hotkey=%s",
+        "round=%s consensus winner uid=%s hotkey=%s entry=%s champion_kept=%s",
         round_id,
         winner_uid,
         winner_hotkey,
+        winner["entry_id"],
+        champion_kept,
     )
-    return winner
+    return winner_uid, winner_hotkey
 
 
 def main_loop(wallet, api: APIClient) -> None:

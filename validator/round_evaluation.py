@@ -46,13 +46,22 @@ def _materialize_agents(api: APIClient, roster: dict, workspace: Path) -> dict[s
     agents_root.mkdir(parents=True, exist_ok=True)
     local_entries: dict[str, dict] = {}
     for entry in roster["entries"]:
-        agent_dir = agents_root / f"{entry['miner_uid']}_{_safe_dirname(entry['miner_hotkey'])}"
+        entry_id = entry.get("entry_id") or entry["submission_id"]
+        entry_kind = entry.get("entry_kind", "submission")
+        spec_name = _safe_dirname(f"{entry_kind}_{entry_id}")
+        agent_dir = agents_root / spec_name
         shutil.rmtree(agent_dir, ignore_errors=True)
         agent_dir.mkdir(parents=True, exist_ok=True)
         payload = api.download_bytes(entry["download_url"])
         _safe_extract_tar_gz(payload, agent_dir)
-        local_entries[entry["miner_hotkey"]] = {
-            **entry,
+        local_entries[entry_id] = {
+            "entry_id": entry_id,
+            "entry_kind": entry_kind,
+            "miner_uid": entry["miner_uid"],
+            "miner_hotkey": entry["miner_hotkey"],
+            "submission_id": entry.get("submission_id"),
+            "source_round_id": entry.get("source_round_id"),
+            "spec_name": spec_name,
             "agent_dir": agent_dir,
         }
     return local_entries
@@ -108,20 +117,20 @@ def run_round_evaluation(wallet, api: APIClient, round_state: dict) -> dict:
     )
 
     agent_specs = [
-        AgentSpec(name=hotkey, path=entry["agent_dir"])
-        for hotkey, entry in local_entries.items()
+        AgentSpec(name=entry["spec_name"], path=entry["agent_dir"])
+        for entry in local_entries.values()
     ]
     proxy = LocalChutesProxy.from_config() if PROXY_ENABLED else None
     session_tokens: dict[str, str] = {}
     agent_env_by_name: dict[str, dict[str, str]] = {}
     if proxy is not None:
         proxy.start()
-        for miner_hotkey in local_entries:
+        for entry_id, entry in local_entries.items():
             session = proxy.create_session(
-                f"round={round_id}:{miner_hotkey}",
+                f"round={round_id}:{entry_id}",
             )
-            session_tokens[miner_hotkey] = session.token
-            agent_env_by_name[miner_hotkey] = session.env
+            session_tokens[entry_id] = session.token
+            agent_env_by_name[entry["spec_name"]] = session.env
     try:
         with configure_mcbench_proxy(agent_env_by_name):
             batch_report = evaluate_multiple_agents(
@@ -138,27 +147,31 @@ def run_round_evaluation(wallet, api: APIClient, round_state: dict) -> dict:
             proxy.stop()
 
     rows: list[dict] = []
-    for miner_hotkey, entry in local_entries.items():
-        report = batch_report.agents[miner_hotkey]
+    for entry_id, entry in local_entries.items():
+        report = batch_report.agents[entry["spec_name"]]
         if proxy is not None:
-            _write_proxy_usage(report, proxy.usage_summary(session_tokens[miner_hotkey]))
+            _write_proxy_usage(report, proxy.usage_summary(session_tokens[entry_id]))
         report_path = report.output_dir / "report.json"
         if not report_path.exists():
-            raise RuntimeError(f"missing report.json for miner {miner_hotkey}")
+            raise RuntimeError(f"missing report.json for entry {entry_id}")
         recording_path = _ensure_recording_file(report)
 
         report_slot = api.request_artifact_slot(
             round_id=round_id,
             validator_uid=validator_uid,
+            entry_id=entry_id,
+            entry_kind=entry["entry_kind"],
             miner_uid=entry["miner_uid"],
-            miner_hotkey=miner_hotkey,
+            miner_hotkey=entry["miner_hotkey"],
             artifact_kind="report_json",
         )
         recording_slot = api.request_artifact_slot(
             round_id=round_id,
             validator_uid=validator_uid,
+            entry_id=entry_id,
+            entry_kind=entry["entry_kind"],
             miner_uid=entry["miner_uid"],
-            miner_hotkey=miner_hotkey,
+            miner_hotkey=entry["miner_hotkey"],
             artifact_kind="recording_mcpr",
         )
 
@@ -167,8 +180,12 @@ def run_round_evaluation(wallet, api: APIClient, round_state: dict) -> dict:
 
         rows.append(
             {
+                "entry_id": entry_id,
+                "entry_kind": entry["entry_kind"],
                 "miner_uid": entry["miner_uid"],
-                "miner_hotkey": miner_hotkey,
+                "miner_hotkey": entry["miner_hotkey"],
+                "submission_id": entry.get("submission_id"),
+                "source_round_id": entry.get("source_round_id"),
                 "score": float(report.score),
                 "status": report.status,
                 "report_s3_key": report_slot["storage_key"],
