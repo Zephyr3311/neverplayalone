@@ -55,8 +55,8 @@ Sandbox constraints to design around:
   LLM proxy.
 - **LLM access via the proxy only.** When the validator runs with the proxy
   enabled, your agent receives `OPENAI_BASE_URL` / `OPENAI_API_KEY` (and
-  `CHUTES_BASE_URL` / `CHUTES_API_KEY`) pointing at an OpenAI-compatible
-  endpoint that forwards to Chutes. Streaming is not supported, models may be
+  `OPENROUTER_BASE_URL` / `OPENROUTER_API_KEY`) pointing at an OpenAI-compatible
+  endpoint that forwards to OpenRouter. Streaming is not supported, models may be
   allowlisted, and each run has a hard spend cap — budget your calls.
 - **Read-only filesystem** apart from `/tmp` (64 MB). Memory and process
   counts are limited.

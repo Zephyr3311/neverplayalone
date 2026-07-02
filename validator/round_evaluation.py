@@ -13,7 +13,7 @@ from shared import chain
 from shared.api_client import APIClient
 
 from validator.config import MAX_PARALLEL_AGENTS, MISSION_ID, PROXY_ENABLED, WORKSPACE_ROOT
-from validator.proxy import LocalChutesProxy, configure_npabench_proxy
+from validator.proxy import ProxyContainer
 
 log = logging.getLogger(__name__)
 
@@ -116,32 +116,45 @@ def run_round_evaluation(wallet, api: APIClient, round_state: dict) -> dict:
         round_state.get("freeze_block_hash"),
     )
 
+    proxy = (
+        ProxyContainer.from_config(
+            container_name=f"npa-proxy-round-{round_id}",
+            workspace=workspace,
+        )
+        if PROXY_ENABLED
+        else None
+    )
+    session_ids: dict[str, str] = {}
+    agent_env_by_entry: dict[str, dict[str, str]] = {}
+    if proxy is not None:
+        for entry_id in local_entries:
+            session = proxy.mint_session(f"round={round_id}:{entry_id}")
+            session_ids[entry_id] = session.session_id
+            agent_env_by_entry[entry_id] = session.env
+
     agent_specs = [
-        AgentSpec(name=entry["spec_name"], path=entry["agent_dir"])
-        for entry in local_entries.values()
+        AgentSpec(
+            name=entry["spec_name"],
+            path=entry["agent_dir"],
+            env=agent_env_by_entry.get(entry_id),
+        )
+        for entry_id, entry in local_entries.items()
     ]
-    proxy = LocalChutesProxy.from_config() if PROXY_ENABLED else None
-    session_tokens: dict[str, str] = {}
-    agent_env_by_name: dict[str, dict[str, str]] = {}
+    sidecar_containers = (proxy.name,) if proxy is not None else ()
+
     if proxy is not None:
         proxy.start()
-        for entry_id, entry in local_entries.items():
-            session = proxy.create_session(
-                f"round={round_id}:{entry_id}",
-            )
-            session_tokens[entry_id] = session.token
-            agent_env_by_name[entry["spec_name"]] = session.env
     try:
-        with configure_npabench_proxy(agent_env_by_name):
-            batch_report = evaluate_multiple_agents(
-                agent_specs,
-                mission_id=roster.get("mission_id", MISSION_ID),
-                seed=seed,
-                output_dir=workspace / "npabench_results",
-                record=True,
-                agent_mode=AgentMode.SANDBOXED,
-                max_parallel=MAX_PARALLEL_AGENTS,
-            )
+        batch_report = evaluate_multiple_agents(
+            agent_specs,
+            mission_id=roster.get("mission_id", MISSION_ID),
+            seed=seed,
+            output_dir=workspace / "npabench_results",
+            record=True,
+            agent_mode=AgentMode.SANDBOXED,
+            max_parallel=MAX_PARALLEL_AGENTS,
+            sidecar_containers=sidecar_containers,
+        )
     finally:
         if proxy is not None:
             proxy.stop()
@@ -150,7 +163,7 @@ def run_round_evaluation(wallet, api: APIClient, round_state: dict) -> dict:
     for entry_id, entry in local_entries.items():
         report = batch_report.agents[entry["spec_name"]]
         if proxy is not None:
-            _write_proxy_usage(report, proxy.usage_summary(session_tokens[entry_id]))
+            _write_proxy_usage(report, proxy.read_usage(session_ids[entry_id]))
         report_path = report.output_dir / "report.json"
         if not report_path.exists():
             raise RuntimeError(f"missing report.json for entry {entry_id}")

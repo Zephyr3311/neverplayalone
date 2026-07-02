@@ -12,10 +12,12 @@ LOOP_POLL_SECONDS = int(os.environ.get("NPA_LOOP_POLL_SECONDS", "12"))
 WORKSPACE_ROOT = os.environ.get("NPA_WORKSPACE_ROOT", "/tmp/npa_validator")
 MAX_PARALLEL_AGENTS = int(os.environ.get("NPA_MAX_PARALLEL_AGENTS", "2"))
 PROXY_ENABLED = os.environ.get("NPA_PROXY_ENABLED", "1").lower() not in {"0", "false", "no"}
-PROXY_BIND_HOST = os.environ.get("NPA_PROXY_BIND_HOST", "127.0.0.1")
-PROXY_PORT = int(os.environ.get("NPA_PROXY_PORT", "18080"))
-CHUTES_API_KEY = os.environ.get("CHUTES_API_KEY", os.environ.get("NPA_CHUTES_API_KEY", ""))
-CHUTES_BASE_URL = os.environ.get("NPA_CHUTES_BASE_URL", "https://llm.chutes.ai/v1")
+# Port the proxy container listens on inside the sandbox network. It is never
+# published to the host, so this is a container-internal port, not a host port.
+PROXY_PORT = int(os.environ.get("NPA_PROXY_PORT", "8080"))
+# OpenRouter is the upstream inference provider the sandbox proxy forwards to.
+OPENROUTER_API_KEY = os.environ.get("OPENROUTER_API_KEY", "")
+OPENROUTER_BASE_URL = os.environ.get("NPA_OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1")
 PROXY_ALLOWED_MODELS = os.environ.get("NPA_PROXY_ALLOWED_MODELS", "")
 PROXY_MODEL_PRICES_JSON = os.environ.get("NPA_PROXY_MODEL_PRICES_JSON", "")
 PROXY_DEFAULT_INPUT_PRICE_PER_1M_USD = float(

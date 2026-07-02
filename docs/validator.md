@@ -12,7 +12,7 @@ See the [README](../README.md#incentive-mechanism) for the full mechanism.
   Minecraft server and miner sandboxes in containers)
 - Node.js + npm (the npabench recorder is a Node tool)
 - A registered validator hotkey with stake
-- `CHUTES_API_KEY` if you enable the LLM proxy for miner agents
+- `OPENROUTER_API_KEY` if you enable the LLM proxy for miner agents
 
 ## Setup
 
@@ -46,7 +46,7 @@ Edit `.env`:
 - `NPA_BT_WALLET_DIR` — your `~/.bittensor` path if not using the default
   wallet root
 - `NPA_WALLET` / `NPA_HOTKEY` — the wallet registered above
-- `CHUTES_API_KEY` and `NPA_PROXY_ENABLED=1` — only when miners need LLM
+- `OPENROUTER_API_KEY` and `NPA_PROXY_ENABLED=1` — only when miners need LLM
   access through the proxy
 
 All knobs:
@@ -61,10 +61,11 @@ All knobs:
 | `NPA_LOOP_POLL_SECONDS` | `12` | Validator loop poll cadence |
 | `NPA_WORKSPACE_ROOT` | `/tmp/npa_validator` | Local validator round workspace |
 | `NPA_MAX_PARALLEL_AGENTS` | `2` | Parallel npabench agent slots |
-| `CHUTES_API_KEY` | unset | Upstream Chutes API key used by the validator proxy |
-| `NPA_PROXY_ENABLED` | `1` | Enable validator-local Chutes proxy injection |
-| `NPA_PROXY_PORT` | `18080` | Host port exposed to miner containers as the local proxy |
-| `NPA_PROXY_ALLOWED_MODELS` | empty | Optional comma-separated Chutes model allowlist |
+| `OPENROUTER_API_KEY` | unset | OpenRouter API key used by the validator proxy |
+| `NPA_OPENROUTER_BASE_URL` | `https://openrouter.ai/api/v1` | OpenRouter API base URL |
+| `NPA_PROXY_ENABLED` | `1` | Run the per-round egress proxy container |
+| `NPA_PROXY_PORT` | `8080` | Container-internal port the proxy listens on (not published to the host) |
+| `NPA_PROXY_ALLOWED_MODELS` | empty | Optional comma-separated model allowlist |
 | `NPA_PROXY_DEFAULT_INPUT_PRICE_PER_1M_USD` | `0` | Fallback input token price used for spend control |
 | `NPA_PROXY_DEFAULT_OUTPUT_PRICE_PER_1M_USD` | `0` | Fallback output token price used for spend control |
 | `NPA_PROXY_MODEL_PRICES_JSON` | empty | Optional per-model pricing JSON |
@@ -103,18 +104,25 @@ and can be deleted after a round completes.
 
 ## The LLM proxy
 
-Miner sandboxes have no internet access. When `NPA_PROXY_ENABLED=1`, the
-validator runs a local OpenAI-compatible proxy that is the sandbox's only
-route to Chutes:
+Miner sandboxes run on per-slot `--internal` Docker networks with no internet
+access. When `NPA_PROXY_ENABLED=1`, each round starts an **egress-proxy
+container** that npabench attaches to those networks, so the sandbox reaches it
+by container DNS (`http://npa-proxy-round-<id>:8080/v1`) and never touches the
+host. The proxy is the sandbox's only route to OpenRouter:
 
-- your real `CHUTES_API_KEY` never enters a miner container — each run gets a
-  per-session token instead
+- your real `OPENROUTER_API_KEY` lives only inside the proxy container — each
+  agent gets a per-session token, injected as `OPENROUTER_BASE_URL`/`OPENAI_BASE_URL`
+  plus a matching key (any OpenAI-compatible client picks these up from env)
 - requests are restricted to chat/completions-style endpoints, optionally to
-  an allowlisted model set
-- each run has a hard spend cap (`NPA_PROXY_MAX_TOTAL_SPEND_USD`) based on
-  token usage and the configured prices
-- per-run usage is written into the uploaded `report.json` as `proxy_usage`,
-  so LLM consumption is tracked per miner
+  an allowlisted model set, with a request body size cap
+- each run has a hard spend cap (`NPA_PROXY_MAX_TOTAL_SPEND_USD`); the cap
+  still depletes even if the upstream omits a `usage` field
+- the proxy records per-request usage to a shared volume; the summary is folded
+  into the uploaded `report.json` as `proxy_usage`, so LLM consumption is
+  tracked per miner
+
+Because the proxy is reached only over the internal Docker network, it binds no
+host port and is not reachable from the host LAN or the internet.
 
 ## Updating
 
