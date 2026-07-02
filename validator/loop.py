@@ -5,10 +5,10 @@ import logging
 import time
 from typing import Optional
 
-from . import chain
-from .api_client import APIClient
+from common import chain
+from common.api_client import APIClient
 from .config import LOOP_POLL_SECONDS
-from .duel import run_round_evaluation
+from .round_evaluation import run_round_evaluation
 
 log = logging.getLogger(__name__)
 
@@ -56,24 +56,25 @@ def _weighted_top_miner(scoreboards: list[dict], freeze_block_hash: str | None) 
 
 
 def _process_consensus(wallet, api: APIClient, round_state: dict) -> Optional[tuple[int, str]]:
-    scoreboards = api.list_round_scoreboards(round_state["round_id"])
+    round_id = int(round_state["round_id"])
+    scoreboards = api.list_round_scoreboards(round_id)
     winner = _weighted_top_miner(scoreboards, round_state.get("freeze_block_hash"))
     if winner is None:
-        log.info("round=%s: no valid scoreboards yet for consensus", round_state["round_id"])
+        log.info("round=%s: no valid scoreboards yet for consensus", round_id)
         return None
 
     winner_uid, winner_hotkey = winner
     validator_uid = chain.hotkey_uid(wallet.hotkey.ss58_address)
-    chain.set_winner_weights(wallet, winner_uid)
     api.upload_consensus_result(
-        round_id=round_state["round_id"],
+        round_id=round_id,
         validator_uid=validator_uid,
         top_miner_uid=winner_uid,
         top_miner_hotkey=winner_hotkey,
     )
+    chain.set_winner_weights(wallet, winner_uid)
     log.info(
         "round=%s consensus winner uid=%s hotkey=%s",
-        round_state["round_id"],
+        round_id,
         winner_uid,
         winner_hotkey,
     )
@@ -102,7 +103,7 @@ def main_loop(wallet, api: APIClient) -> None:
                     evaluated_rounds.add(round_id)
                     log.info("round=%s evaluation uploaded", round_id)
                 except Exception as exc:
-                    log.warning("round=%s evaluation failed: %s", round_id, exc)
+                    log.exception("round=%s evaluation failed: %s", round_id, exc)
 
             if time.time() >= float(evaluating_round["scoreboard_deadline_at"]) and round_id not in consensus_rounds:
                 try:
@@ -110,6 +111,6 @@ def main_loop(wallet, api: APIClient) -> None:
                     if winner is not None:
                         consensus_rounds.add(round_id)
                 except Exception as exc:
-                    log.warning("round=%s consensus failed: %s", round_id, exc)
+                    log.exception("round=%s consensus failed and will retry: %s", round_id, exc)
 
         time.sleep(LOOP_POLL_SECONDS)

@@ -5,8 +5,8 @@ import logging
 import os
 import sys
 
-from . import chain
-from .api_client import APIClient
+from common import chain
+from common.api_client import APIClient
 from .config import API_URL, NETUID, NETWORK, PROXY_ENABLED, PROXY_PORT
 from .loop import main_loop
 
@@ -32,7 +32,7 @@ def main() -> int:
     log.info("netuid=%s network=%s api=%s", NETUID, NETWORK, API_URL)
     log.info("proxy_enabled=%s proxy_port=%s", PROXY_ENABLED, PROXY_PORT)
 
-    api = APIClient(wallet)
+    api = APIClient(wallet, base_url=API_URL)
     try:
         api.health()
     except Exception as exc:

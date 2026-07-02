@@ -1,10 +1,12 @@
-"""Bittensor SDK wrappers used by validators and miner CLI."""
+"""Bittensor SDK helpers shared by miners and validators."""
 from __future__ import annotations
 
 import logging
+import os
 from typing import TYPE_CHECKING, Any, Optional
 
-from .config import NETUID, NETWORK
+NETUID = 490
+NETWORK = os.environ.get("NPA_NETWORK", "test")
 
 log = logging.getLogger(__name__)
 
@@ -20,17 +22,31 @@ def _bt():
     return bt
 
 
+def _resolve_ctor(bt, *names: str):
+    for name in names:
+        ctor = getattr(bt, name, None)
+        if ctor is not None:
+            return ctor
+    raise AttributeError(f"bittensor does not expose any of: {', '.join(names)}")
+
+
 def get_subtensor() -> "bt.subtensor":
     global _subtensor
     if _subtensor is None:
         bt = _bt()
-        _subtensor = bt.subtensor(network=NETWORK)
+        subtensor_ctor = _resolve_ctor(bt, "subtensor", "Subtensor")
+        _subtensor = subtensor_ctor(network=NETWORK)
     return _subtensor
 
 
 def make_wallet(name: str = "default", hotkey: str = "default") -> "bt.wallet":
     bt = _bt()
-    return bt.wallet(name=name, hotkey=hotkey)
+    wallet_ctor = _resolve_ctor(bt, "wallet", "Wallet")
+    wallet_path = os.environ.get("NPA_BT_WALLET_DIR")
+    kwargs = {"name": name, "hotkey": hotkey}
+    if wallet_path:
+        kwargs["path"] = wallet_path
+    return wallet_ctor(**kwargs)
 
 
 def current_block() -> int:

@@ -8,7 +8,7 @@ from pathlib import Path
 
 import httpx
 
-from .config import API_URL
+API_URL = "https://api.neverplayalone.ai"
 
 
 class APIClient:
@@ -42,6 +42,12 @@ class APIClient:
         response.raise_for_status()
         return response.json()
 
+    def _get_signed(self, path: str):
+        headers = self._sign_headers("GET", path, b"")
+        response = self._client.get(self.base_url + path, headers=headers)
+        response.raise_for_status()
+        return response.json()
+
     def _post_signed(self, path: str, body: dict):
         payload = json.dumps(body).encode("utf-8")
         headers = {"Content-Type": "application/json", **self._sign_headers("POST", path, payload)}
@@ -52,6 +58,11 @@ class APIClient:
     def _put_bytes(self, url: str, data: bytes) -> dict:
         response = self._client.put(url, content=data)
         response.raise_for_status()
+        content_type = response.headers.get("Content-Type", "")
+        if not response.content:
+            return {}
+        if "application/json" not in content_type.lower():
+            return {}
         return response.json()
 
     def health(self) -> dict:
@@ -79,7 +90,7 @@ class APIClient:
         return self._get("/validator/rounds/current")
 
     def get_round_roster(self, round_id: int) -> dict:
-        return self._get(f"/validator/rounds/{round_id}/roster")
+        return self._get_signed(f"/validator/rounds/{round_id}/roster")
 
     def download_bytes(self, url: str) -> bytes:
         response = self._client.get(url)
@@ -128,7 +139,7 @@ class APIClient:
         )
 
     def list_round_scoreboards(self, round_id: int) -> list[dict]:
-        return self._get(f"/validator/rounds/{round_id}/scoreboards")
+        return self._get_signed(f"/validator/rounds/{round_id}/scoreboards")
 
     def upload_consensus_result(
         self,

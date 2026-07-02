@@ -29,7 +29,7 @@ npa-validator = "validator.main:main"
 
 [tool.setuptools.packages.find]
 where = ["."]
-include = ["miner*", "validator*"]
+include = ["common*", "miner*", "validator*"]
 exclude = ["mcbench*", "scripts*", "tests*"]
 
 [tool.ruff]

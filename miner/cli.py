@@ -5,7 +5,18 @@ from pathlib import Path
 
 import typer
 
+from common import chain
+from common.api_client import APIClient
+from miner.config import API_URL, NPA_NETWORK
+
 app = typer.Typer(help="Never Play Alone subnet CLI")
+
+
+def _configure_chain_network() -> None:
+    if chain.NETWORK == NPA_NETWORK:
+        return
+    chain.NETWORK = NPA_NETWORK
+    chain._subtensor = None
 
 
 @app.command()
@@ -13,18 +24,17 @@ def submit(
     archive_path: Path = typer.Argument(..., exists=True, dir_okay=False, readable=True),
     wallet_name: str = typer.Option("default", "--wallet", help="Bittensor wallet name"),
     wallet_hotkey: str = typer.Option("default", "--hotkey", help="Bittensor hotkey name"),
+    api_url: str = typer.Option(None, "--api", help="Override the configured API URL"),
 ) -> None:
     """Upload a round submission tarball to the backend."""
-    from validator import chain
-    from validator.api_client import APIClient
-
     if archive_path.suffixes[-2:] != [".tar", ".gz"]:
         typer.echo("error: submission archive must be a .tar.gz file", err=True)
         raise typer.Exit(2)
 
+    _configure_chain_network()
     wallet = chain.make_wallet(wallet_name, wallet_hotkey)
     miner_uid = chain.hotkey_uid(wallet.hotkey.ss58_address)
-    api = APIClient(wallet)
+    api = APIClient(wallet, base_url=(api_url or API_URL))
     try:
         slot = api.create_submission_slot(miner_uid=miner_uid, filename=archive_path.name)
         api.upload_submission_file(slot["upload_url"], archive_path)
@@ -45,12 +55,10 @@ def submit(
 
 @app.command()
 def status(
-    api_url: str = typer.Option(None, "--api", help="Override NPA_API_URL"),
+    api_url: str = typer.Option(None, "--api", help="Override the configured API URL"),
 ) -> None:
     """Show the current submission round from the backend."""
     import httpx
-
-    from validator.config import API_URL
 
     url = (api_url or API_URL).rstrip("/")
     try:
@@ -76,4 +84,3 @@ def status(
 
 if __name__ == "__main__":
     app()
-

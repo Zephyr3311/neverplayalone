@@ -9,8 +9,9 @@ import shutil
 import tarfile
 from pathlib import Path, PurePosixPath
 
-from . import chain
-from .api_client import APIClient
+from common import chain
+from common.api_client import APIClient
+
 from .config import MAX_PARALLEL_AGENTS, MISSION_ID, PROXY_ENABLED, WORKSPACE_ROOT
 from .proxy import LocalChutesProxy, configure_mcbench_proxy
 
@@ -187,3 +188,4 @@ def run_round_evaluation(wallet, api: APIClient, round_state: dict) -> dict:
         "stake_weight": stake_weight,
         "rows": rows,
     }
+

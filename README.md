@@ -45,8 +45,9 @@ No central referee decides the winner. The chain does.
 
 ```
 neverplayalone_subnet/
+├── common/     # shared API client + chain helpers
 ├── miner/      # `npa` CLI for miner submission
-├── validator/  # validator binary + backend client
+├── validator/  # validator binary + round evaluation
 └── README.md
 ```
 
@@ -58,7 +59,7 @@ cd neverplayalone_subnet
 pip install -e .
 ```
 
-Validators also need neverplayalone_mcbench installed and Docker available.
+Validators also need neverplayalone_mcbench installed and Docker available on the host.
 For LLM-based miner agents, validators also need a `CHUTES_API_KEY`.
 
 The backend lives in the separate `neverplayalone_api` repository.
@@ -76,6 +77,14 @@ npa submit ./agent.tar.gz --wallet miner --hotkey hk1
 Validators will pick it up when the current submission round closes and the
 round enters evaluation.
 
+Miner CLI defaults live in `miner/config.py`.
+Edit `API_URL` and `NPA_NETWORK` there if you want different defaults, then run:
+
+```bash
+npa status
+npa submit ./agent.tar.gz
+```
+
 ## Run a validator
 
 ```bash
@@ -85,12 +94,14 @@ btcli subnet register --netuid 490 --subtensor.network test --wallet.name valida
 
 cp .env.example .env
 # edit .env:
-#   - set NPA_BT_WALLET_DIR to your host ~/.bittensor path
+#   - set NPA_BT_WALLET_DIR to your ~/.bittensor path if you do not use the default wallet root
 #   - set NPA_WALLET / NPA_HOTKEY
 #   - set CHUTES_API_KEY and NPA_PROXY_ENABLED=1 only if needed
-docker compose up --build
+./scripts/run-validator.sh
 ```
 
+The validator runs directly on the host. Docker is still required because
+mcbench launches the Minecraft server and sandboxed miner agents in containers.
 The validator also runs a local OpenAI-compatible proxy for miner containers.
 Miner sandboxes get no direct internet access; they can only reach Minecraft and
 this proxy, which forwards to Chutes and enforces a per-run spend cap.
