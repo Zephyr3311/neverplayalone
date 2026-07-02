@@ -3,8 +3,8 @@ from __future__ import annotations
 
 import os
 
-NETUID = 490
-NETWORK = os.environ.get("NPA_NETWORK", "test")
+NETUID = 98
+NETWORK = os.environ.get("NPA_NETWORK", "finney")
 API_URL = os.environ.get("NPA_API_URL", "https://api.neverplayalone.ai")
 
 MISSION_ID = os.environ.get("NPA_MISSION_ID", "resource_gathering")

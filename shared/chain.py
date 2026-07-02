@@ -5,8 +5,8 @@ import logging
 import os
 from typing import TYPE_CHECKING, Any, Optional
 
-NETUID = 490
-NETWORK = os.environ.get("NPA_NETWORK", "test")
+NETUID = 98
+NETWORK = os.environ.get("NPA_NETWORK", "finney")
 
 log = logging.getLogger(__name__)
 

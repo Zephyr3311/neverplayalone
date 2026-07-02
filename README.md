@@ -1,40 +1,83 @@
-# Never Play Alone
+<p align="center">
+  <img src="logo.png" alt="Never Play Alone" width="200"/>
+</p>
 
-### A Bittensor subnet for round-based Minecraft agent evaluation
+<h1 align="center">⛏️ Never Play Alone ⛏️</h1>
 
-> **Netuid 490 · Bittensor testnet · winner-take-all**
+<p align="center"><b>A Bittensor subnet for round-based Minecraft agent evaluation</b></p>
 
-Never Play Alone turns Minecraft into a proving ground for autonomous agents.
-Miners upload one `tar.gz` agent package per round to the backend. When a round
-enters evaluation, validators download the same derived roster, run every miner
-against the same deterministic [npabench](https://github.com/neverplayalone/neverplayalone_bench) task,
-upload artifacts and raw scoreboards, then compute the winner locally using
-validator stake weights and set winner-take-all chain weights.
+<p align="center">
+  <a href="https://neverplayalone.ai/">Website</a> ·
+  <a href="docs/miner.md">Become a miner</a> ·
+  <a href="docs/validator.md">Run a validator</a>
+</p>
+
+> **Now live on Bittensor mainnet — subnet 98.** Never Play Alone runs on
+> netuid 98 (`finney`), winner-take-all.
+
+## What is Never Play Alone?
+
+**Never Play Alone** leverages the power of Bittensor to build low-latency,
+living AI agents that adapt in real time and play alongside humans. Miners
+build Node-based agents that play real Minecraft missions — gathering
+resources, surviving, completing objectives — and submit them as sealed
+packages. Validators run every agent in identical, sandboxed conditions
+against the same deterministic task, score the results, and put the winner on
+chain.
 
 No central referee decides the winner. The chain does.
 
-## Roles at a glance
+We want agents that feel alive — friendly, responsive, and enjoyable to play
+with. Agents that naturally collaborate with players, help complete
+objectives, populate servers, and make multiplayer worlds feel more alive.
 
-| Role | What they do | Reward |
-| --- | --- | --- |
-| **Miner** | Upload one `tar.gz` agent package for the current submission round | Emission if ranked first |
-| **Validator** | Download the round roster, run all miners with npabench, upload scoreboards, compute the winner, set weights | Validator dividends |
-## Architecture
+## Why Minecraft? The market opportunity
+
+Minecraft is one of the world's most-played and highest revenue-generating
+games: a massive, persistent player base, hundreds of thousands of community
+servers, and a thriving economy around them. That makes it both a serious
+commercial opportunity and the ideal proving ground — an open-ended
+environment where AI agents can explore, learn, collaborate, and solve
+increasingly complex tasks rather than overfit to a narrow benchmark.
+
+The product thesis is simple: deploying AI companions must be effortless.
+Connect your Minecraft server, choose how many AI companions you want, and
+the deployment is handled — spinning up an army of AI players should be a few
+clicks and a few dollars away. The best-performing miner agents on this
+subnet are exactly what powers that product, which gives Never Play Alone one
+of the clearest paths to profitability among current subnets: emission
+rewards the agents that the commercial product then sells.
+
+## NPA-Bench
+
+Evaluation runs on [NPA-Bench](https://github.com/neverplayalone/neverplayalone_bench),
+our Minecraft benchmark. It improves upon existing benchmarks such as
+MineDojo, MCU, and mc-bench by focusing on:
+
+- **real gameplay** — agents join actual Minecraft servers and act in the
+  live world, not a simplified simulator
+- **evaluation quality** — deterministic missions, seeded runs, scored
+  reports, and full gameplay recordings as verifiable artifacts
+- **subnet-ready features** — sandboxed execution, network isolation,
+  spend-capped LLM access, and per-run usage tracking, built for
+  adversarial multi-validator settings
+
+## How a round works
 
 ```
-        neverplayalone_api                  subtensor (netuid 490)
-        ──────────────────                  ──────────────────────
-              │                                       │
-              │ submission intake                     │ metagraph / stakes
-              │ derived round roster                  │ set_weights
-              │ validator artifacts + scoreboards     │
-              │ consensus result observability        │
-              │                                       │
-   ┌──────────┴──────────┐                ┌───────────┴────────────┐
-   │ validators          │                │ miners                 │
-   │  - poll current     │                │  - submit tar.gz       │
-   │    round windows    │                │    for open round      │
-   │  - download roster  │                └────────────────────────┘
+        neverplayalone_api                  subtensor
+        ──────────────────                  ─────────
+              │                                  │
+              │ submission intake                │ metagraph / stakes
+              │ derived round roster             │ set_weights
+              │ artifacts + scoreboards          │
+              │ consensus observability          │
+              │                                  │
+   ┌──────────┴──────────┐             ┌─────────┴──────────────┐
+   │ validators          │             │ miners                 │
+   │  - poll round       │             │  - submit one tar.gz   │
+   │    windows          │             │    agent per round     │
+   │  - download roster  │             └────────────────────────┘
    │  - run npabench     │
    │    batch            │
    │  - upload results   │
@@ -42,123 +85,97 @@ No central referee decides the winner. The chain does.
    └─────────────────────┘
 ```
 
+1. **Submission.** While the round is open, each miner uploads one `tar.gz`
+   agent package to the backend.
+2. **Freeze.** At evaluation start, the backend derives a single roster from
+   all accepted submissions — the round id, the round seed, every admitted
+   entry, and the reigning champion's defense entry.
+3. **Evaluation.** Every validator downloads the same roster and runs every
+   entry with npabench in sandboxed containers: no internet access, identical
+   missions, per-validator seeds derived from the chain block hash. Each
+   validator uploads a `report.json` and gameplay `recording.mcpr` per entry,
+   plus a raw scoreboard.
+4. **Consensus.** After the scoreboard deadline, every validator downloads all
+   scoreboards and computes the winner locally — no trusted aggregator.
+
+## Incentive mechanism
+
+We're not reinventing the wheel: the subnet adopts mechanisms that have
+already proven successful across Bittensor for maximizing quality,
+accelerating progress, and minimizing exploits.
+
+**Winner-take-all.** Each round produces exactly one winner, and validators
+set the full weight vector on that miner's UID. Emission concentrates on the
+best agent instead of spreading across mediocrity.
+
+**Stake-weighted scoring.** Every entry's final score is the average of all
+validator scoreboards, weighted by each validator's stake at the round's
+freeze block. A validator's influence on the outcome is proportional to its
+stake, and no single scoreboard decides a round.
+
+**Champion defense.** The previous round's winner is automatically re-entered
+as the *champion defense*. A challenger only takes the crown by beating the
+champion's score by more than the round's **champion margin** (delta);
+otherwise the champion retains it. Ties on score break deterministically
+(lowest UID, then entry id). This rewards durable improvements over noise:
+dethroning the champion requires being clearly better, not marginally lucky.
+
+**Fully open-source competition.** Every submitted agent is open source.
+Instead of everyone solving the same problems in isolation, each round's
+winning approach becomes the floor the next challenger builds on — the whole
+subnet improves collaboratively while the champion margin keeps copy-paste
+resubmissions from winning.
+
+**Determinism and anti-gaming.** All validators evaluate the identical roster
+on the identical mission. Per-validator seeds come from the chain block hash
+at evaluation time, so miners cannot pre-fit to a known seed and validators
+cannot be replayed against. Agent sandboxes are network-isolated: the only
+reachable services are the Minecraft server and the validator's LLM proxy,
+which enforces per-run spend caps and records per-miner usage. Synthetic task
+generation pipelines keep the mission pool fresh as the benchmark expands.
+
+## Roadmap
+
+1. **Launch** the subnet on mainnet and onboard validators ✅
+2. **Validate** — begin mining with a 90–95% burn rate to prove
+   infrastructure and benchmark stability
+3. **Qualify** — demonstrate the benchmark and subnet work reliably, then
+   qualify for emissions
+4. **Expand** — continuously grow NPA-Bench with more diverse and
+   increasingly challenging tasks
+5. **Commercialize** — ship the product powered by the best-performing miner
+   agents
+
+Along the way we'll launch our own showcase Minecraft server where the
+miners' agents play live — streamed on Twitch with an AI narrator explaining
+what's happening in the world and what the agents are doing in real time.
+
+## Participate
+
+| Role | What you do | Guide |
+| --- | --- | --- |
+| **Miner** | Build a Minecraft agent, package it, submit with `npacli` | [docs/miner.md](docs/miner.md) |
+| **Validator** | Run the evaluation loop with Docker + npabench | [docs/validator.md](docs/validator.md) |
+
+We're excited to build this together with the Bittensor community — feedback
+is always welcome.
+
 ## Layout
 
 ```
 neverplayalone_subnet/
+├── docs/       # miner and validator guides
 ├── shared/     # shared API client + chain helpers
 ├── miner/      # `npacli` CLI for miner submission
 ├── validator/  # validator binary + round evaluation
-├── scripts/    # miner_setup.sh / validator_setup.sh
-└── README.md
+└── scripts/    # miner_setup.sh / validator_setup.sh
 ```
 
-## Install
+The evaluation harness lives in
+[neverplayalone_bench](https://github.com/neverplayalone/neverplayalone_bench);
+the backend lives in the separate `neverplayalone_api` repository.
 
-```bash
-git clone https://github.com/<this-repo>
-cd neverplayalone_subnet
-```
+## Links
 
-Miners:
-
-```bash
-./scripts/miner_setup.sh
-```
-
-Validators (also clones [npabench](https://github.com/neverplayalone/neverplayalone_bench)
-into `vendor/` and installs it; Docker required on the host):
-
-```bash
-./scripts/validator_setup.sh
-```
-
-For LLM-based miner agents, validators also need a `CHUTES_API_KEY`.
-
-The backend lives in the separate `neverplayalone_api` repository.
-
-## Be a miner
-
-1. Build a Node-based npabench-compatible agent and package it as `tar.gz`.
-3. Register on netuid 490 testnet.
-4. Submit the archive to the backend:
-
-```bash
-npacli submit ./agent.tar.gz --wallet miner --hotkey hk1
-```
-
-Validators will pick it up when the current submission round closes and the
-round enters evaluation.
-
-Miner CLI defaults live in `miner/config.py`.
-Edit `API_URL` and `NPA_NETWORK` there if you want different defaults, then run:
-
-```bash
-npacli status
-npacli submit ./agent.tar.gz
-```
-
-## Run a validator
-
-```bash
-btcli wallet new_coldkey --wallet.name validator
-btcli wallet new_hotkey --wallet.name validator --wallet.hotkey hk1
-btcli subnet register --netuid 490 --subtensor.network test --wallet.name validator --wallet.hotkey hk1
-
-./scripts/validator_setup.sh
-# edit .env (created from .env.example by the setup script):
-#   - set NPA_BT_WALLET_DIR to your ~/.bittensor path if you do not use the default wallet root
-#   - set NPA_WALLET / NPA_HOTKEY
-#   - set CHUTES_API_KEY and NPA_PROXY_ENABLED=1 only if needed
-set -a; source .env; set +a
-.venv/bin/npa-validator
-```
-
-The validator runs directly on the host. Docker is still required because
-npabench launches the Minecraft server and sandboxed miner agents in containers.
-The validator also runs a local OpenAI-compatible proxy for miner containers.
-Miner sandboxes get no direct internet access; they can only reach Minecraft and
-this proxy, which forwards to Chutes and enforces a per-run spend cap.
-
-## Consensus mechanism
-
-Each round:
-
-1. Miners upload one `tar.gz` agent package before the round freezes.
-2. At evaluation start, the backend exposes one roster manifest derived from
-   accepted submissions finalized before the round cutoff, with:
-   - round id
-   - round seed
-   - every admitted miner submission
-3. All validators download the same roster and evaluate every miner with
-   `npabench.evaluate_multiple_agents(...)`.
-4. Every validator uploads:
-   - one `report.json` per miner
-   - one `recording.mcpr` per miner
-   - one raw scoreboard JSON for the round
-5. After the scoreboard deadline, every validator downloads all scoreboards,
-   applies stake-weighted averaging, picks the top miner, and sets a
-   winner-take-all weight vector on chain.
-
-## Config knobs
-
-Set via environment variables.
-
-| Var | Default | Meaning |
-| --- | --- | --- |
-| `NPA_NETWORK` | `test` | Bittensor network |
-| `NPA_API_URL` | `https://api.neverplayalone.ai` | API base URL |
-| `NPA_WALLET` | `default` | Wallet name |
-| `NPA_HOTKEY` | `default` | Hotkey name |
-| `NPA_MISSION_ID` | `resource_gathering` | npabench mission id |
-| `NPA_LOOP_POLL_SECONDS` | `12` | Validator loop poll cadence |
-| `NPA_WORKSPACE_ROOT` | `/tmp/npa_validator` | Local validator round workspace |
-| `NPA_MAX_PARALLEL_AGENTS` | `2` | Parallel npabench agent slots |
-| `CHUTES_API_KEY` | unset | Upstream Chutes API key used by the validator proxy |
-| `NPA_PROXY_ENABLED` | `1` | Enable validator-local Chutes proxy injection |
-| `NPA_PROXY_PORT` | `18080` | Host port exposed to miner containers as the local proxy |
-| `NPA_PROXY_ALLOWED_MODELS` | empty | Optional comma-separated Chutes model allowlist |
-| `NPA_PROXY_DEFAULT_INPUT_PRICE_PER_1M_USD` | `0` | Fallback input token price used for spend control |
-| `NPA_PROXY_DEFAULT_OUTPUT_PRICE_PER_1M_USD` | `0` | Fallback output token price used for spend control |
-| `NPA_PROXY_MODEL_PRICES_JSON` | empty | Optional per-model pricing JSON |
-| `NPA_PROXY_MAX_TOTAL_SPEND_USD` | `1.0` | Max total proxy spend per miner run |
+- 🌐 Website: [neverplayalone.ai](https://neverplayalone.ai/)
+- ⛏️ Benchmark: [neverplayalone_bench](https://github.com/neverplayalone/neverplayalone_bench)

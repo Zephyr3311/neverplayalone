@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "neverplayalone-subnet"
 version = "0.1.0"
-description = "Never Play Alone Bittensor subnet (netuid 490 testnet) — Minecraft agent benchmarking"
+description = "Never Play Alone Bittensor subnet (netuid 98) — Minecraft agent benchmarking"
 readme = "README.md"
 requires-python = ">=3.10"
 license = { text = "MIT" }

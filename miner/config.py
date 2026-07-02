@@ -2,4 +2,4 @@
 from __future__ import annotations
 
 API_URL = "https://api.neverplayalone.ai"
-NPA_NETWORK = "test"
+NPA_NETWORK = "finney"
