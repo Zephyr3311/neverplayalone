@@ -1,4 +1,4 @@
-"""Round evaluation helpers backed by mcbench batch execution."""
+"""Round evaluation helpers backed by npabench batch execution."""
 from __future__ import annotations
 
 import hashlib
@@ -9,11 +9,11 @@ import shutil
 import tarfile
 from pathlib import Path, PurePosixPath
 
-from common import chain
-from common.api_client import APIClient
+from shared import chain
+from shared.api_client import APIClient
 
-from .config import MAX_PARALLEL_AGENTS, MISSION_ID, PROXY_ENABLED, WORKSPACE_ROOT
-from .proxy import LocalChutesProxy, configure_mcbench_proxy
+from validator.config import MAX_PARALLEL_AGENTS, MISSION_ID, PROXY_ENABLED, WORKSPACE_ROOT
+from validator.proxy import LocalChutesProxy, configure_npabench_proxy
 
 log = logging.getLogger(__name__)
 
@@ -94,7 +94,7 @@ def _per_validator_seed(round_id: int, mission_id: str, validator_hotkey: str) -
 
 
 def run_round_evaluation(wallet, api: APIClient, round_state: dict) -> dict:
-    from mcbench import AgentMode, AgentSpec, evaluate_multiple_agents
+    from npabench import AgentMode, AgentSpec, evaluate_multiple_agents
 
     round_id = int(round_state["round_id"])
     roster = api.get_round_roster(round_id)
@@ -132,12 +132,12 @@ def run_round_evaluation(wallet, api: APIClient, round_state: dict) -> dict:
             session_tokens[entry_id] = session.token
             agent_env_by_name[entry["spec_name"]] = session.env
     try:
-        with configure_mcbench_proxy(agent_env_by_name):
+        with configure_npabench_proxy(agent_env_by_name):
             batch_report = evaluate_multiple_agents(
                 agent_specs,
                 mission_id=roster.get("mission_id", MISSION_ID),
                 seed=seed,
-                output_dir=workspace / "mcbench_results",
+                output_dir=workspace / "npabench_results",
                 record=True,
                 agent_mode=AgentMode.SANDBOXED,
                 max_parallel=MAX_PARALLEL_AGENTS,

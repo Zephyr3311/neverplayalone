@@ -5,10 +5,10 @@ import logging
 import time
 from typing import Optional
 
-from common import chain
-from common.api_client import APIClient
-from .config import LOOP_POLL_SECONDS
-from .round_evaluation import run_round_evaluation
+from shared import chain
+from shared.api_client import APIClient
+from validator.config import LOOP_POLL_SECONDS
+from validator.round_evaluation import run_round_evaluation
 
 log = logging.getLogger(__name__)
 

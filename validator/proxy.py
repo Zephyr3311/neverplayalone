@@ -14,7 +14,7 @@ from urllib.parse import urlparse
 
 import httpx
 
-from .config import (
+from validator.config import (
     CHUTES_API_KEY,
     CHUTES_BASE_URL,
     PROXY_ALLOWED_MODELS,
@@ -389,12 +389,12 @@ class LocalChutesProxy:
 
 
 @contextmanager
-def configure_mcbench_proxy(agent_env_by_name: dict[str, dict[str, str]]) -> Iterator[None]:
+def configure_npabench_proxy(agent_env_by_name: dict[str, dict[str, str]]) -> Iterator[None]:
     if not agent_env_by_name:
         yield
         return
 
-    from mcbench.agents import sandboxed_agent
+    from npabench.agents import sandboxed_agent
 
     original = sandboxed_agent.SandboxedAgent.docker_run_cmd
 

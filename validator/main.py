@@ -5,10 +5,10 @@ import logging
 import os
 import sys
 
-from common import chain
-from common.api_client import APIClient
-from .config import API_URL, NETUID, NETWORK, PROXY_ENABLED, PROXY_PORT
-from .loop import main_loop
+from shared import chain
+from shared.api_client import APIClient
+from validator.config import API_URL, NETUID, NETWORK, PROXY_ENABLED, PROXY_PORT
+from validator.loop import main_loop
 
 
 def _setup_logging() -> None:

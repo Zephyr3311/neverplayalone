@@ -9,7 +9,7 @@ import unittest
 if importlib.util.find_spec("httpx") is None:
     sys.modules["httpx"] = types.SimpleNamespace(Client=lambda timeout=None: object())
 
-from common.api_client import APIClient
+from shared.api_client import APIClient
 
 
 class _FakeHotkey:

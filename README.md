@@ -7,7 +7,7 @@
 Never Play Alone turns Minecraft into a proving ground for autonomous agents.
 Miners upload one `tar.gz` agent package per round to the backend. When a round
 enters evaluation, validators download the same derived roster, run every miner
-against the same deterministic [mcbench](../neverplayalone_mcbench/) task,
+against the same deterministic [npabench](https://github.com/neverplayalone/neverplayalone_bench) task,
 upload artifacts and raw scoreboards, then compute the winner locally using
 validator stake weights and set winner-take-all chain weights.
 
@@ -18,7 +18,7 @@ No central referee decides the winner. The chain does.
 | Role | What they do | Reward |
 | --- | --- | --- |
 | **Miner** | Upload one `tar.gz` agent package for the current submission round | Emission if ranked first |
-| **Validator** | Download the round roster, run all miners with mcbench, upload scoreboards, compute the winner, set weights | Validator dividends |
+| **Validator** | Download the round roster, run all miners with npabench, upload scoreboards, compute the winner, set weights | Validator dividends |
 ## Architecture
 
 ```
@@ -35,7 +35,8 @@ No central referee decides the winner. The chain does.
    │  - poll current     │                │  - submit tar.gz       │
    │    round windows    │                │    for open round      │
    │  - download roster  │                └────────────────────────┘
-   │  - run mcbench batch│
+   │  - run npabench     │
+   │    batch            │
    │  - upload results   │
    │  - compute winner   │
    └─────────────────────┘
@@ -45,9 +46,10 @@ No central referee decides the winner. The chain does.
 
 ```
 neverplayalone_subnet/
-├── common/     # shared API client + chain helpers
-├── miner/      # `npa` CLI for miner submission
+├── shared/     # shared API client + chain helpers
+├── miner/      # `npacli` CLI for miner submission
 ├── validator/  # validator binary + round evaluation
+├── scripts/    # miner_setup.sh / validator_setup.sh
 └── README.md
 ```
 
@@ -56,22 +58,33 @@ neverplayalone_subnet/
 ```bash
 git clone https://github.com/<this-repo>
 cd neverplayalone_subnet
-pip install -e .
 ```
 
-Validators also need neverplayalone_mcbench installed and Docker available on the host.
+Miners:
+
+```bash
+./scripts/miner_setup.sh
+```
+
+Validators (also clones [npabench](https://github.com/neverplayalone/neverplayalone_bench)
+into `vendor/` and installs it; Docker required on the host):
+
+```bash
+./scripts/validator_setup.sh
+```
+
 For LLM-based miner agents, validators also need a `CHUTES_API_KEY`.
 
 The backend lives in the separate `neverplayalone_api` repository.
 
 ## Be a miner
 
-1. Build a Node-based mcbench-compatible agent and package it as `tar.gz`.
+1. Build a Node-based npabench-compatible agent and package it as `tar.gz`.
 3. Register on netuid 490 testnet.
 4. Submit the archive to the backend:
 
 ```bash
-npa submit ./agent.tar.gz --wallet miner --hotkey hk1
+npacli submit ./agent.tar.gz --wallet miner --hotkey hk1
 ```
 
 Validators will pick it up when the current submission round closes and the
@@ -81,8 +94,8 @@ Miner CLI defaults live in `miner/config.py`.
 Edit `API_URL` and `NPA_NETWORK` there if you want different defaults, then run:
 
 ```bash
-npa status
-npa submit ./agent.tar.gz
+npacli status
+npacli submit ./agent.tar.gz
 ```
 
 ## Run a validator
@@ -92,16 +105,17 @@ btcli wallet new_coldkey --wallet.name validator
 btcli wallet new_hotkey --wallet.name validator --wallet.hotkey hk1
 btcli subnet register --netuid 490 --subtensor.network test --wallet.name validator --wallet.hotkey hk1
 
-cp .env.example .env
-# edit .env:
+./scripts/validator_setup.sh
+# edit .env (created from .env.example by the setup script):
 #   - set NPA_BT_WALLET_DIR to your ~/.bittensor path if you do not use the default wallet root
 #   - set NPA_WALLET / NPA_HOTKEY
 #   - set CHUTES_API_KEY and NPA_PROXY_ENABLED=1 only if needed
-./scripts/run-validator.sh
+set -a; source .env; set +a
+.venv/bin/npa-validator
 ```
 
 The validator runs directly on the host. Docker is still required because
-mcbench launches the Minecraft server and sandboxed miner agents in containers.
+npabench launches the Minecraft server and sandboxed miner agents in containers.
 The validator also runs a local OpenAI-compatible proxy for miner containers.
 Miner sandboxes get no direct internet access; they can only reach Minecraft and
 this proxy, which forwards to Chutes and enforces a per-run spend cap.
@@ -117,7 +131,7 @@ Each round:
    - round seed
    - every admitted miner submission
 3. All validators download the same roster and evaluate every miner with
-   `mcbench.evaluate_multiple_agents(...)`.
+   `npabench.evaluate_multiple_agents(...)`.
 4. Every validator uploads:
    - one `report.json` per miner
    - one `recording.mcpr` per miner
@@ -136,10 +150,10 @@ Set via environment variables.
 | `NPA_API_URL` | `https://api.neverplayalone.ai` | API base URL |
 | `NPA_WALLET` | `default` | Wallet name |
 | `NPA_HOTKEY` | `default` | Hotkey name |
-| `NPA_MISSION_ID` | `resource_gathering` | mcbench mission id |
+| `NPA_MISSION_ID` | `resource_gathering` | npabench mission id |
 | `NPA_LOOP_POLL_SECONDS` | `12` | Validator loop poll cadence |
 | `NPA_WORKSPACE_ROOT` | `/tmp/npa_validator` | Local validator round workspace |
-| `NPA_MAX_PARALLEL_AGENTS` | `2` | Parallel mcbench agent slots |
+| `NPA_MAX_PARALLEL_AGENTS` | `2` | Parallel npabench agent slots |
 | `CHUTES_API_KEY` | unset | Upstream Chutes API key used by the validator proxy |
 | `NPA_PROXY_ENABLED` | `1` | Enable validator-local Chutes proxy injection |
 | `NPA_PROXY_PORT` | `18080` | Host port exposed to miner containers as the local proxy |

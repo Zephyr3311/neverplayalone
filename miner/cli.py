@@ -1,12 +1,12 @@
-"""`npa` CLI for miners."""
+"""`npacli` CLI for miners."""
 from __future__ import annotations
 
 from pathlib import Path
 
 import typer
 
-from common import chain
-from common.api_client import APIClient
+from shared import chain
+from shared.api_client import APIClient
 from miner.config import API_URL, NPA_NETWORK
 
 app = typer.Typer(help="Never Play Alone subnet CLI")
