@@ -12,7 +12,7 @@ from pathlib import Path, PurePosixPath
 from shared import chain
 from shared.api_client import APIClient
 
-from validator.config import MAX_PARALLEL_AGENTS, MISSION_ID, PROXY_ENABLED, WORKSPACE_ROOT
+from validator.config import MAX_PARALLEL_AGENTS, MISSION_ID, WORKSPACE_ROOT
 from validator.proxy import ProxyContainer
 
 log = logging.getLogger(__name__)
@@ -116,21 +116,16 @@ def run_round_evaluation(wallet, api: APIClient, round_state: dict) -> dict:
         round_state.get("freeze_block_hash"),
     )
 
-    proxy = (
-        ProxyContainer.from_config(
-            container_name=f"npa-proxy-round-{round_id}",
-            workspace=workspace,
-        )
-        if PROXY_ENABLED
-        else None
+    proxy = ProxyContainer.from_config(
+        container_name=f"npa-proxy-round-{round_id}",
+        workspace=workspace,
     )
     session_ids: dict[str, str] = {}
     agent_env_by_entry: dict[str, dict[str, str]] = {}
-    if proxy is not None:
-        for entry_id in local_entries:
-            session = proxy.mint_session(f"round={round_id}:{entry_id}")
-            session_ids[entry_id] = session.session_id
-            agent_env_by_entry[entry_id] = session.env
+    for entry_id in local_entries:
+        session = proxy.mint_session(f"round={round_id}:{entry_id}")
+        session_ids[entry_id] = session.session_id
+        agent_env_by_entry[entry_id] = session.env
 
     agent_specs = [
         AgentSpec(
@@ -140,10 +135,9 @@ def run_round_evaluation(wallet, api: APIClient, round_state: dict) -> dict:
         )
         for entry_id, entry in local_entries.items()
     ]
-    sidecar_containers = (proxy.name,) if proxy is not None else ()
+    sidecar_containers = (proxy.name,)
 
-    if proxy is not None:
-        proxy.start()
+    proxy.start()
     try:
         batch_report = evaluate_multiple_agents(
             agent_specs,
@@ -156,14 +150,12 @@ def run_round_evaluation(wallet, api: APIClient, round_state: dict) -> dict:
             sidecar_containers=sidecar_containers,
         )
     finally:
-        if proxy is not None:
-            proxy.stop()
+        proxy.stop()
 
     rows: list[dict] = []
     for entry_id, entry in local_entries.items():
         report = batch_report.agents[entry["spec_name"]]
-        if proxy is not None:
-            _write_proxy_usage(report, proxy.read_usage(session_ids[entry_id]))
+        _write_proxy_usage(report, proxy.read_usage(session_ids[entry_id]))
         report_path = report.output_dir / "report.json"
         if not report_path.exists():
             raise RuntimeError(f"missing report.json for entry {entry_id}")

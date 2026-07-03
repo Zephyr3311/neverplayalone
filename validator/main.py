@@ -26,7 +26,7 @@ import logging  # noqa: E402
 
 from shared import chain  # noqa: E402
 from shared.api_client import APIClient  # noqa: E402
-from validator.config import API_URL, NETUID, NETWORK, PROXY_ENABLED, PROXY_PORT  # noqa: E402
+from validator.config import API_URL, NETUID, NETWORK, PROXY_PORT  # noqa: E402
 from validator.loop import main_loop  # noqa: E402
 
 
@@ -49,7 +49,7 @@ def main() -> int:
 
     log.info("hotkey=%s", wallet.hotkey.ss58_address)
     log.info("netuid=%s network=%s api=%s", NETUID, NETWORK, API_URL)
-    log.info("proxy_enabled=%s proxy_port=%s", PROXY_ENABLED, PROXY_PORT)
+    log.info("proxy_port=%s", PROXY_PORT)
 
     api = APIClient(wallet, base_url=API_URL)
     try:

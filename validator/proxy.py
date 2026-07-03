@@ -22,14 +22,9 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from validator.config import (
+    CHUTES_API_KEY,
     OPENROUTER_API_KEY,
-    OPENROUTER_BASE_URL,
-    PROXY_ALLOWED_MODELS,
-    PROXY_DEFAULT_INPUT_PRICE_PER_1M_USD,
-    PROXY_DEFAULT_OUTPUT_PRICE_PER_1M_USD,
-    PROXY_ENABLED,
     PROXY_MAX_TOTAL_SPEND_USD,
-    PROXY_MODEL_PRICES_JSON,
     PROXY_PORT,
     PROXY_UPSTREAM_TIMEOUT_SECONDS,
 )
@@ -38,6 +33,7 @@ log = logging.getLogger(__name__)
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 PROXY_BUILD_DIR = REPO_ROOT / "docker" / "proxy"
+MODEL_PAIRS_FILE = PROXY_BUILD_DIR / "model_pairs.json"
 PROXY_IMAGE_REPO = "npa-proxy"
 
 
@@ -87,24 +83,16 @@ class ProxyContainer:
         container_name: str,
         listen_port: int,
         workspace: Path,
-        upstream_api_key: str,
-        upstream_base_url: str,
-        allowed_models: str,
-        model_prices_json: str,
-        default_input_price: float,
-        default_output_price: float,
+        openrouter_api_key: str,
+        chutes_api_key: str,
         default_max_total_spend_usd: float,
         upstream_timeout_seconds: float,
     ) -> None:
         self.container_name = container_name
         self.listen_port = listen_port
         self.workspace = workspace
-        self.upstream_api_key = upstream_api_key
-        self.upstream_base_url = upstream_base_url
-        self.allowed_models = allowed_models
-        self.model_prices_json = model_prices_json
-        self.default_input_price = default_input_price
-        self.default_output_price = default_output_price
+        self.openrouter_api_key = openrouter_api_key
+        self.chutes_api_key = chutes_api_key
         self.default_max_total_spend_usd = default_max_total_spend_usd
         self.upstream_timeout_seconds = upstream_timeout_seconds
         self._sessions: dict[str, ProxySession] = {}
@@ -116,20 +104,17 @@ class ProxyContainer:
 
     @classmethod
     def from_config(cls, *, container_name: str, workspace: Path) -> "ProxyContainer":
-        if not PROXY_ENABLED:
-            raise RuntimeError("proxy is disabled")
-        if not OPENROUTER_API_KEY:
-            raise RuntimeError("OPENROUTER_API_KEY is required when proxy is enabled")
+        if not (OPENROUTER_API_KEY or CHUTES_API_KEY):
+            raise RuntimeError(
+                "at least one provider key is required when the proxy runs "
+                "(set OPENROUTER_API_KEY and/or CHUTES_API_KEY)"
+            )
         return cls(
             container_name=container_name,
             listen_port=PROXY_PORT,
             workspace=workspace,
-            upstream_api_key=OPENROUTER_API_KEY,
-            upstream_base_url=OPENROUTER_BASE_URL,
-            allowed_models=PROXY_ALLOWED_MODELS,
-            model_prices_json=PROXY_MODEL_PRICES_JSON,
-            default_input_price=PROXY_DEFAULT_INPUT_PRICE_PER_1M_USD,
-            default_output_price=PROXY_DEFAULT_OUTPUT_PRICE_PER_1M_USD,
+            openrouter_api_key=OPENROUTER_API_KEY,
+            chutes_api_key=CHUTES_API_KEY,
             default_max_total_spend_usd=PROXY_MAX_TOTAL_SPEND_USD,
             upstream_timeout_seconds=PROXY_UPSTREAM_TIMEOUT_SECONDS,
         )
@@ -185,6 +170,7 @@ class ProxyContainer:
             "--user", f"{os.getuid()}:{os.getgid()}",
             "--env-file", str(self._env_file),
             "-v", f"{self._sessions_file}:/sessions.json:ro",
+            "-v", f"{MODEL_PAIRS_FILE}:/model_pairs.json:ro",
             "-v", f"{self._usage_dir}:/usage",
             _image_tag(),
         ]
@@ -232,13 +218,9 @@ class ProxyContainer:
 
     def _write_env_file(self) -> None:
         env = {
-            "NPA_PROXY_UPSTREAM_API_KEY": self.upstream_api_key,
-            "NPA_PROXY_UPSTREAM_BASE_URL": self.upstream_base_url,
+            "NPA_PROXY_OPENROUTER_KEY": self.openrouter_api_key,
+            "NPA_PROXY_CHUTES_KEY": self.chutes_api_key,
             "NPA_PROXY_LISTEN_PORT": str(self.listen_port),
-            "NPA_PROXY_ALLOWED_MODELS": self.allowed_models,
-            "NPA_PROXY_MODEL_PRICES_JSON": self.model_prices_json,
-            "NPA_PROXY_DEFAULT_INPUT_PRICE_PER_1M_USD": str(self.default_input_price),
-            "NPA_PROXY_DEFAULT_OUTPUT_PRICE_PER_1M_USD": str(self.default_output_price),
             "NPA_PROXY_UPSTREAM_TIMEOUT_SECONDS": str(self.upstream_timeout_seconds),
         }
         self._env_file.write_text("".join(f"{key}={value}\n" for key, value in env.items()))

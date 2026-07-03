@@ -1,0 +1,37 @@
+{
+  "_comment": "Pinned cross-provider model map + prices for the miner LLM proxy. Each entry gives a model's id on every supported provider and its price per 1M tokens (USD, input/output) on each. The proxy routes each request to the provider whose id form the agent used (funded via OPENROUTER_API_KEY / CHUTES_API_KEY), allows ONLY models listed here, and meters spend using that provider's price. Verify ids and prices against each provider and keep this file pinned so every validator enforces the same set.",
+  "pairs": [
+    {
+      "openrouter": "deepseek/deepseek-chat-v3-0324",
+      "chutes": "deepseek-ai/DeepSeek-V3-0324",
+      "price": {
+        "openrouter": { "input": 0.30, "output": 0.88 },
+        "chutes": { "input": 0.27, "output": 0.40 }
+      }
+    },
+    {
+      "openrouter": "deepseek/deepseek-r1",
+      "chutes": "deepseek-ai/DeepSeek-R1",
+      "price": {
+        "openrouter": { "input": 0.55, "output": 2.19 },
+        "chutes": { "input": 0.50, "output": 2.00 }
+      }
+    },
+    {
+      "openrouter": "qwen/qwen3-32b",
+      "chutes": "Qwen/Qwen3-32B",
+      "price": {
+        "openrouter": { "input": 0.10, "output": 0.30 },
+        "chutes": { "input": 0.08, "output": 0.25 }
+      }
+    },
+    {
+      "openrouter": "openai/gpt-oss-120b",
+      "chutes": "openai/gpt-oss-120b",
+      "price": {
+        "openrouter": { "input": 0.09, "output": 0.45 },
+        "chutes": { "input": 0.05, "output": 0.25 }
+      }
+    }
+  ]
+}

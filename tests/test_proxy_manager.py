@@ -11,12 +11,8 @@ def _container(workspace: Path) -> ProxyContainer:
         container_name="npa-proxy-test",
         listen_port=8080,
         workspace=workspace,
-        upstream_api_key="secret-key",
-        upstream_base_url="https://openrouter.ai/api/v1",
-        allowed_models="",
-        model_prices_json="",
-        default_input_price=0.0,
-        default_output_price=0.0,
+        openrouter_api_key="secret-key",
+        chutes_api_key="",
         default_max_total_spend_usd=1.0,
         upstream_timeout_seconds=60.0,
     )
@@ -51,7 +47,7 @@ def test_sessions_file_maps_tokens_and_hides_upstream_key(tmp_path):
     # The real key only appears in the env-file (mounted into the container),
     # never in the sessions table the tokens map through.
     assert "secret-key" not in json.dumps(table)
-    assert "NPA_PROXY_UPSTREAM_API_KEY=secret-key" in (tmp_path / "proxy" / "proxy.env").read_text()
+    assert "NPA_PROXY_OPENROUTER_KEY=secret-key" in (tmp_path / "proxy" / "proxy.env").read_text()
 
 
 def test_read_usage_roundtrip(tmp_path):

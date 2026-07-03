@@ -36,24 +36,43 @@ def _env(name: str, default: str = "") -> str:
     return os.environ.get(name, default)
 
 
-UPSTREAM_API_KEY = _env("NPA_PROXY_UPSTREAM_API_KEY")
-UPSTREAM_BASE_URL = _env("NPA_PROXY_UPSTREAM_BASE_URL", "https://openrouter.ai/api/v1").rstrip("/")
 LISTEN_HOST = _env("NPA_PROXY_LISTEN_HOST", "0.0.0.0")
 LISTEN_PORT = int(_env("NPA_PROXY_LISTEN_PORT", "8080"))
 SESSIONS_FILE = Path(_env("NPA_PROXY_SESSIONS_FILE", "/sessions.json"))
 USAGE_DIR = Path(_env("NPA_PROXY_USAGE_DIR", "/usage"))
-GLOBAL_ALLOWED_MODELS = {m.strip() for m in _env("NPA_PROXY_ALLOWED_MODELS").split(",") if m.strip()}
-DEFAULT_INPUT_PRICE = float(_env("NPA_PROXY_DEFAULT_INPUT_PRICE_PER_1M_USD", "0"))
-DEFAULT_OUTPUT_PRICE = float(_env("NPA_PROXY_DEFAULT_OUTPUT_PRICE_PER_1M_USD", "0"))
+MODEL_PAIRS_FILE = Path(_env("NPA_PROXY_MODEL_PAIRS_FILE", "/model_pairs.json"))
 UPSTREAM_TIMEOUT = float(_env("NPA_PROXY_UPSTREAM_TIMEOUT_SECONDS", "60"))
 # OpenRouter attribution headers (optional; shown on the OpenRouter dashboard).
 REFERER = _env("NPA_PROXY_REFERER", "https://neverplayalone.ai")
 TITLE = _env("NPA_PROXY_TITLE", "Never Play Alone")
 
+_PROVIDER_BASE_URLS = {
+    "openrouter": "https://openrouter.ai/api/v1",
+    "chutes": "https://llm.chutes.ai/v1",
+}
 
-def _upstream_headers() -> dict[str, str]:
+
+def _load_upstreams() -> dict[str, dict[str, str]]:
+    keys = {
+        "openrouter": _env("NPA_PROXY_OPENROUTER_KEY"),
+        "chutes": _env("NPA_PROXY_CHUTES_KEY"),
+    }
+    upstreams: dict[str, dict[str, str]] = {}
+    for name, key in keys.items():
+        if not key:
+            continue
+        base = _env(f"NPA_PROXY_{name.upper()}_BASE_URL") or _PROVIDER_BASE_URLS[name]
+        upstreams[name] = {"base_url": base.rstrip("/"), "api_key": key}
+    return upstreams
+
+
+UPSTREAMS = _load_upstreams()
+DEFAULT_PROVIDER = next(iter(UPSTREAMS), "")
+
+
+def _upstream_headers(api_key: str) -> dict[str, str]:
     headers = {
-        "Authorization": f"Bearer {UPSTREAM_API_KEY}",
+        "Authorization": f"Bearer {api_key}",
         "Content-Type": "application/json",
     }
     if REFERER:
@@ -63,21 +82,38 @@ def _upstream_headers() -> dict[str, str]:
     return headers
 
 
-def _load_model_prices() -> dict[str, dict[str, float]]:
-    raw = _env("NPA_PROXY_MODEL_PRICES_JSON").strip()
-    if not raw:
-        return {}
-    parsed = json.loads(raw)
+def _load_routing() -> tuple[dict[str, tuple[str, str]], dict[str, dict[str, float]]]:
+    if not MODEL_PAIRS_FILE.exists():
+        return {}, {}
+    try:
+        pairs = json.loads(MODEL_PAIRS_FILE.read_text()).get("pairs", [])
+    except (OSError, json.JSONDecodeError) as exc:
+        log.warning("could not read model pairs file %s: %s", MODEL_PAIRS_FILE, exc)
+        return {}, {}
+    route: dict[str, tuple[str, str]] = {}
     prices: dict[str, dict[str, float]] = {}
-    for model, row in parsed.items():
-        prices[model] = {
-            "input_per_1m_usd": float(row.get("input_per_1m_usd", 0.0)),
-            "output_per_1m_usd": float(row.get("output_per_1m_usd", 0.0)),
-        }
-    return prices
+    for pair in pairs:
+        ids = {k: v for k, v in pair.items() if k != "price" and isinstance(v, str) and v}
+        funded_here = [p for p in ids if p in UPSTREAMS]
+        if not funded_here:
+            continue
+        price_cfg = pair.get("price") or {}
+        for provider in funded_here:
+            pc = price_cfg.get(provider) or {}
+            if not pc:
+                log.warning("model pairs: no price for %s on %s; treated as free", ids[provider], provider)
+            prices[ids[provider]] = {
+                "input_per_1m_usd": float(pc.get("input", 0.0)),
+                "output_per_1m_usd": float(pc.get("output", 0.0)),
+            }
+        fallback = DEFAULT_PROVIDER if DEFAULT_PROVIDER in funded_here else funded_here[0]
+        for provider, model_id in ids.items():
+            target = provider if provider in UPSTREAMS else fallback
+            route[model_id] = (target, ids[target])
+    return route, prices
 
 
-MODEL_PRICES = _load_model_prices()
+ROUTE, MODEL_PAIR_PRICES = _load_routing()
 
 
 @dataclass
@@ -85,7 +121,6 @@ class Session:
     session_id: str
     label: str
     max_total_spend_usd: float
-    allowed_models: set[str] = field(default_factory=set)
     request_count: int = 0
     total_input_tokens: int = 0
     total_output_tokens: int = 0
@@ -119,7 +154,6 @@ def _load_sessions() -> dict[str, Session]:
             session_id=str(row["session_id"]),
             label=str(row.get("label", row["session_id"])),
             max_total_spend_usd=float(row.get("max_total_spend_usd", 0.0)),
-            allowed_models={str(m) for m in row.get("allowed_models", [])},
         )
     return sessions
 
@@ -139,8 +173,11 @@ def _error(message: str, *, code: str) -> dict:
 
 class Proxy:
     def __init__(self) -> None:
-        if not UPSTREAM_API_KEY:
-            raise RuntimeError("NPA_PROXY_UPSTREAM_API_KEY is required")
+        if not UPSTREAMS:
+            raise RuntimeError(
+                "no upstream provider configured "
+                "(set NPA_PROXY_OPENROUTER_KEY and/or NPA_PROXY_CHUTES_KEY)"
+            )
         self.sessions = _load_sessions()
         self._lock = threading.Lock()
         # Force IPv4: OpenRouter resolves to Cloudflare AAAA records the Docker
@@ -151,7 +188,7 @@ class Proxy:
             transport=httpx.HTTPTransport(local_address="0.0.0.0"),
         )
         USAGE_DIR.mkdir(parents=True, exist_ok=True)
-        log.info("proxy loaded %d session(s), upstream=%s", len(self.sessions), UPSTREAM_BASE_URL)
+        log.info("proxy loaded %d session(s), providers=%s", len(self.sessions), ",".join(UPSTREAMS))
 
     # ── request routing ────────────────────────────────────────────────
     def handle(self, handler: BaseHTTPRequestHandler) -> None:
@@ -192,10 +229,11 @@ class Proxy:
         _json_response(handler, 405, _error("method not allowed", code="method_not_allowed"))
 
     def _forward_models(self, handler: BaseHTTPRequestHandler) -> None:
+        upstream = UPSTREAMS[DEFAULT_PROVIDER]
         try:
             response = self._client.get(
-                f"{UPSTREAM_BASE_URL}/models",
-                headers=_upstream_headers(),
+                f"{upstream['base_url']}/models",
+                headers=_upstream_headers(upstream["api_key"]),
             )
         except Exception as exc:
             _json_response(handler, 502, _error(f"upstream failed: {exc}", code="upstream_error"))
@@ -228,11 +266,19 @@ class Proxy:
         if not model:
             _json_response(handler, 400, _error("model is required", code="missing_model"))
             return
-        allowed = session.allowed_models or GLOBAL_ALLOWED_MODELS
-        if allowed and model not in allowed:
-            self._log_request(session, model, 403, 0, 0, 0.0, _ms(t0), "model_rejected")
-            _json_response(handler, 403, _error(f"model not allowed: {model}", code="model_not_allowed"))
-            return
+        if ROUTE:
+            routed = ROUTE.get(model)
+            if routed is None:
+                self._log_request(session, model, 403, 0, 0, 0.0, _ms(t0), "model_rejected")
+                _json_response(handler, 403, _error(f"model not allowed: {model}", code="model_not_allowed"))
+                return
+            provider, target_id = routed
+        else:
+            provider, target_id = DEFAULT_PROVIDER, model
+        upstream = UPSTREAMS[provider]
+        if target_id != model:
+            payload["model"] = target_id
+            model = target_id
 
         with self._lock:
             remaining = session.max_total_spend_usd - session.total_spend_usd
@@ -248,9 +294,9 @@ class Proxy:
 
         try:
             response = self._client.post(
-                f"{UPSTREAM_BASE_URL}{path}",
+                f"{upstream['base_url']}{path}",
                 content=json.dumps(payload).encode("utf-8"),
-                headers=_upstream_headers(),
+                headers=_upstream_headers(upstream["api_key"]),
             )
         except Exception as exc:
             self._log_request(session, model, 502, 0, 0, 0.0, _ms(t0), "upstream_error")
@@ -347,10 +393,7 @@ class Proxy:
 
 
 def _price_for(model: str) -> dict[str, float]:
-    return MODEL_PRICES.get(
-        model,
-        {"input_per_1m_usd": DEFAULT_INPUT_PRICE, "output_per_1m_usd": DEFAULT_OUTPUT_PRICE},
-    )
+    return MODEL_PAIR_PRICES.get(model, {"input_per_1m_usd": 0.0, "output_per_1m_usd": 0.0})
 
 
 def _usage_tokens(payload: dict) -> tuple[int, int]:
