@@ -107,13 +107,47 @@ def self_stake_for_hotkey(hotkey: str, block_hash: str | None = None) -> float:
         return float(stake_by_hotkey().get(hotkey, 0.0))
 
 
-def set_winner_weights(wallet: "bt.wallet", winner_uid: Optional[int]) -> None:
+def compute_weight_vector(
+    count: int,
+    winner_uid: Optional[int],
+    burn_rate: float = 0.0,
+    burn_uid: int = 0,
+) -> list[float]:
+    weights = [0.0] * count
+    if count == 0:
+        return weights
+
+    burn_rate = min(max(float(burn_rate), 0.0), 1.0)
+    if burn_rate > 0.0 and not (0 <= burn_uid < count):
+        log.warning(
+            "burn_rate=%.4f requested but burn_uid=%s is out of range [0,%d); disabling burn",
+            burn_rate,
+            burn_uid,
+            count,
+        )
+        burn_rate = 0.0
+
+    if burn_rate > 0.0:
+        weights[burn_uid] += burn_rate
+    winner_share = 1.0 - burn_rate
+
+    if winner_uid is not None and 0 <= winner_uid < count:
+        weights[winner_uid] += winner_share
+    elif burn_rate > 0.0:
+        weights[burn_uid] += winner_share
+    return weights
+
+
+def set_winner_weights(
+    wallet: "bt.wallet",
+    winner_uid: Optional[int],
+    burn_rate: float = 0.0,
+    burn_uid: int = 0,
+) -> None:
     metagraph = get_metagraph()
     count = len(metagraph.hotkeys)
     raw_uids = list(range(count))
-    raw_weights = [0.0] * count
-    if winner_uid is not None and 0 <= winner_uid < count:
-        raw_weights[winner_uid] = 1.0
+    raw_weights = compute_weight_vector(count, winner_uid, burn_rate, burn_uid)
 
     try:
         from bittensor.utils.weight_utils import (

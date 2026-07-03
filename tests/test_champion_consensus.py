@@ -171,7 +171,9 @@ def _patch_chain(monkeypatch, weights_sink):
     monkeypatch.setattr(loop.chain, "stake_by_hotkey", lambda block=None: {})
     monkeypatch.setattr(loop.chain, "hotkey_uid", lambda hotkey: 99)
     monkeypatch.setattr(
-        loop.chain, "set_winner_weights", lambda wallet, uid: weights_sink.append(uid)
+        loop.chain,
+        "set_winner_weights",
+        lambda wallet, uid, burn_rate=0.0, burn_uid=0: weights_sink.append(uid),
     )
 
 
@@ -201,3 +203,39 @@ def test_process_consensus_sets_challenger_uid_when_dethroned(monkeypatch):
     assert api.consensus["winner_entry_kind"] == "submission"
     assert weights == [8]
     assert result == (8, "Y")
+
+
+def _capture_weight_call(monkeypatch, captured):
+    monkeypatch.setattr(loop.chain, "stake_by_hotkey", lambda block=None: {})
+    monkeypatch.setattr(loop.chain, "hotkey_uid", lambda hotkey: 99)
+    monkeypatch.setattr(
+        loop.chain,
+        "set_winner_weights",
+        lambda wallet, uid, burn_rate=0.0, burn_uid=0: captured.update(
+            uid=uid, burn_rate=burn_rate, burn_uid=burn_uid
+        ),
+    )
+
+
+def test_process_consensus_applies_validator_burn_config(monkeypatch):
+    monkeypatch.setattr(loop, "BURN_RATE", 0.9)
+    monkeypatch.setattr(loop, "BURN_UID", 0)
+    captured = {}
+    _capture_weight_call(monkeypatch, captured)
+
+    api = _FakeAPI(_champion_scoreboards(champion_score=10.0, challenger_score=20.0), margin=5.0)
+    _process_consensus(_FakeWallet(), api, {"round_id": 2})
+
+    assert captured == {"uid": 8, "burn_rate": 0.9, "burn_uid": 0}
+
+
+def test_process_consensus_defaults_to_no_burn_when_unconfigured(monkeypatch):
+    monkeypatch.setattr(loop, "BURN_RATE", 0.0)
+    monkeypatch.setattr(loop, "BURN_UID", 0)
+    captured = {}
+    _capture_weight_call(monkeypatch, captured)
+
+    api = _FakeAPI(_champion_scoreboards(champion_score=10.0, challenger_score=20.0), margin=5.0)
+    _process_consensus(_FakeWallet(), api, {"round_id": 2})
+
+    assert captured == {"uid": 8, "burn_rate": 0.0, "burn_uid": 0}

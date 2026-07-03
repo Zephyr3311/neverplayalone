@@ -7,7 +7,7 @@ from typing import Optional
 
 from shared import chain
 from shared.api_client import APIClient
-from validator.config import LOOP_POLL_SECONDS
+from validator.config import BURN_RATE, BURN_UID, LOOP_POLL_SECONDS
 from validator.round_evaluation import run_round_evaluation
 
 log = logging.getLogger(__name__)
@@ -114,14 +114,16 @@ def _process_consensus(wallet, api: APIClient, round_state: dict) -> Optional[tu
         source_round_id=winner.get("source_round_id"),
         champion_kept=champion_kept,
     )
-    chain.set_winner_weights(wallet, winner_uid)
+    chain.set_winner_weights(wallet, winner_uid, burn_rate=BURN_RATE, burn_uid=BURN_UID)
     log.info(
-        "round=%s consensus winner uid=%s hotkey=%s entry=%s champion_kept=%s",
+        "round=%s consensus winner uid=%s hotkey=%s entry=%s champion_kept=%s burn_rate=%.4f burn_uid=%s",
         round_id,
         winner_uid,
         winner_hotkey,
         winner["entry_id"],
         champion_kept,
+        BURN_RATE,
+        BURN_UID,
     )
     return winner_uid, winner_hotkey
 
