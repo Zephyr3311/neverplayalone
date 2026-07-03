@@ -8,9 +8,9 @@ See the [README](../README.md#incentive-mechanism) for the full mechanism.
 
 ## Requirements
 
-- Linux host with Python 3.10+, git, and Docker (npabench launches the
-  Minecraft server and miner sandboxes in containers)
-- Node.js + npm (the npabench recorder is a Node tool)
+- Ubuntu host with `sudo` access — `validator_setup.sh` installs `uv`, `git`,
+  Docker, and Node.js/npm if they are missing (npabench uses Docker for the
+  Minecraft server and miner sandboxes; the recorder is a Node tool)
 - A registered validator hotkey with stake
 - `OPENROUTER_API_KEY` if you enable the LLM proxy for miner agents
 
@@ -28,13 +28,19 @@ cd neverplayalone_subnet
 
 The setup script:
 
-1. creates `.venv` and installs the subnet package
+0. installs any missing system dependencies — `uv`, `git`, Docker, and
+   Node.js/npm (this step uses `sudo`)
+1. creates `.venv` with `uv` and installs the subnet package
 2. clones npabench into `vendor/neverplayalone_bench` at the pinned
    `BENCH_REF` (override with `NPA_BENCH_REF`) and installs it editable —
    npabench must run from a full repo checkout, so do not replace this with a
    plain `pip install git+URL`
 3. runs `npm install` for the npabench recorder
-4. creates `.env` from `.env.example` if missing
+4. installs `pm2` (global, or repo-local if the global install lacks permission)
+5. creates `.env` from `.env.example` if missing
+
+After installing Docker it adds you to the `docker` group; log out and back in
+(or run `newgrp docker`) so the validator can reach the daemon without `sudo`.
 
 Re-running the script is safe; it updates the npabench checkout to the pin.
 All validators must run the same npabench version or scores diverge.
@@ -75,9 +81,12 @@ All knobs:
 ## Run
 
 ```bash
-set -a; source .env; set +a
-.venv/bin/npa-validator
+source .venv/bin/activate
+pm2 start validator/main.py
 ```
+
+`main.py` loads `.env` on startup, so you don't need to `source .env` — just
+activate the venv (so `pm2` launches under the right Python) and start it.
 
 The validator runs directly on the host; Docker is used by npabench for the
 Minecraft server and the sandboxed miner agents.

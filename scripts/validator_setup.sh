@@ -13,16 +13,70 @@ BENCH_REF="${NPA_BENCH_REF:-main}"
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 BENCH_DIR="${ROOT_DIR}/vendor/neverplayalone_bench"
 VENV_DIR="${ROOT_DIR}/.venv"
-PIP="${VENV_DIR}/bin/pip"
 
 cd "$ROOT_DIR"
 
-if [[ ! -d "$VENV_DIR" ]]; then
-  python3 -m venv "$VENV_DIR"
-fi
+require() { command -v "$1" >/dev/null 2>&1; }
 
-"$PIP" install --upgrade pip
-"$PIP" install -e "$ROOT_DIR"
+APT_UPDATED=0
+apt_update_once() {
+  if [[ "$APT_UPDATED" -eq 0 ]]; then
+    sudo apt-get update -y
+    APT_UPDATED=1
+  fi
+}
+
+ensure_git() {
+  if require git; then return; fi
+  echo "installing git..."
+  apt_update_once
+  sudo apt-get install -y git
+}
+
+ensure_uv() {
+  if require uv; then return; fi
+  echo "installing uv..."
+  curl -LsSf https://astral.sh/uv/install.sh | sh
+  export PATH="$HOME/.local/bin:$PATH"
+  require uv || { echo "error: uv installed but not on PATH; add \$HOME/.local/bin to PATH" >&2; exit 1; }
+}
+
+ensure_node() {
+  if require node; then
+    local major
+    major="$(node -v | sed 's/v//' | cut -d. -f1)"
+    if [[ "$major" -ge 20 ]]; then return; fi
+    echo "node $(node -v) is < 20; upgrading to 20 LTS..."
+  fi
+  echo "installing Node.js 20 LTS + npm..."
+  curl -fsSL https://deb.nodesource.com/setup_20.x | sudo -E bash -
+  sudo apt-get install -y nodejs
+}
+
+ensure_docker() {
+  if ! require docker; then
+    echo "installing Docker Engine..."
+    curl -fsSL https://get.docker.com | sudo sh
+  fi
+  sudo systemctl enable --now docker 2>/dev/null || true
+  getent group docker >/dev/null || sudo groupadd docker || true
+  sudo usermod -aG docker "$(id -un)" || true
+}
+
+ensure_git
+ensure_uv
+ensure_node
+ensure_docker
+
+docker info >/dev/null 2>&1 || \
+  echo "note: docker is not usable as this user yet — log out and back in (or run 'newgrp docker') before starting the validator" >&2
+
+if [[ ! -d "$VENV_DIR" ]]; then
+  uv venv "$VENV_DIR"
+fi
+export VIRTUAL_ENV="$VENV_DIR"
+
+uv pip install -e "$ROOT_DIR"
 
 mkdir -p "${ROOT_DIR}/vendor"
 if [[ ! -d "${BENCH_DIR}/.git" ]]; then
@@ -37,13 +91,21 @@ git -C "$BENCH_DIR" checkout --detach --quiet "origin/${BENCH_REF}" 2>/dev/null 
 # npabench resolves its docker/ and tools/ directories relative to the repo
 # checkout, so it must be installed editable from the clone — a plain
 # `pip install git+URL` would strip those files and break evaluation.
-"$PIP" install -e "$BENCH_DIR"
+uv pip install -e "$BENCH_DIR"
 
 # The npabench recorder is a Node tool that needs its dependencies in place.
-if command -v npm >/dev/null 2>&1; then
-  (cd "${BENCH_DIR}/tools/recorder" && npm install)
+(cd "${BENCH_DIR}/tools/recorder" && npm install)
+
+# pm2 runs the validator as a managed background process. Prefer a global
+# install; fall back to a repo-local one if the global install lacks permission.
+if require pm2; then
+  PM2="pm2"
+elif npm install -g pm2 >/dev/null 2>&1; then
+  PM2="pm2"
 else
-  echo "warning: npm not found; run 'cd ${BENCH_DIR}/tools/recorder && npm install' before evaluating rounds" >&2
+  echo "global pm2 install failed; installing pm2 into node_modules/ instead" >&2
+  npm install pm2 >/dev/null 2>&1
+  PM2="npx pm2"
 fi
 
 if [[ ! -f "${ROOT_DIR}/.env" ]]; then
@@ -52,6 +114,7 @@ if [[ ! -f "${ROOT_DIR}/.env" ]]; then
 fi
 
 echo
-echo "Setup complete (npabench @ $(git -C "$BENCH_DIR" rev-parse --short HEAD)). Run the validator with:"
-echo "  set -a; source .env; set +a"
-echo "  ${VENV_DIR}/bin/npa-validator"
+echo "Setup complete (npabench @ $(git -C "$BENCH_DIR" rev-parse --short HEAD))."
+echo "Edit .env (NPA_WALLET / NPA_HOTKEY / OPENROUTER_API_KEY), then start the validator:"
+echo "  source .venv/bin/activate"
+echo "  ${PM2} start validator/main.py"

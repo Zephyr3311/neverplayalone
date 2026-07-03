@@ -1,14 +1,33 @@
 """Validator entrypoint."""
 from __future__ import annotations
 
-import logging
 import os
 import sys
+from pathlib import Path
 
-from shared import chain
-from shared.api_client import APIClient
-from validator.config import API_URL, NETUID, NETWORK, PROXY_ENABLED, PROXY_PORT
-from validator.loop import main_loop
+_ROOT = Path(__file__).resolve().parent.parent
+
+
+def _load_dotenv() -> None:
+    env_file = _ROOT / ".env"
+    if not env_file.exists():
+        return
+    for raw in env_file.read_text().splitlines():
+        line = raw.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, _, value = line.partition("=")
+        os.environ.setdefault(key.strip(), value.strip().strip('"').strip("'"))
+
+
+_load_dotenv()
+
+import logging  # noqa: E402
+
+from shared import chain  # noqa: E402
+from shared.api_client import APIClient  # noqa: E402
+from validator.config import API_URL, NETUID, NETWORK, PROXY_ENABLED, PROXY_PORT  # noqa: E402
+from validator.loop import main_loop  # noqa: E402
 
 
 def _setup_logging() -> None:
