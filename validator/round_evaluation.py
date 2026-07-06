@@ -97,9 +97,12 @@ def run_round_evaluation(wallet, api: APIClient, round_state: dict) -> dict:
     from npabench import AgentMode, AgentSpec, evaluate_multiple_agents
 
     round_id = round_state["round_id"]  # date-based string id, e.g. "2026-07-06-AM"
+    log.info("round=%s: fetching roster", round_id)
     roster = api.get_round_roster(round_id)
     workspace = _workspace(round_id)
+    log.info("round=%s: workspace=%s", round_id, workspace)
     local_entries = _materialize_agents(api, roster, workspace)
+    log.info("round=%s: materialized %s roster entries", round_id, len(local_entries))
     if not local_entries:
         log.info("round=%s: roster is empty", round_id)
         return {"round_id": round_id, "rows": []}
@@ -139,6 +142,13 @@ def run_round_evaluation(wallet, api: APIClient, round_state: dict) -> dict:
 
     proxy.start()
     try:
+        log.info(
+            "round=%s: starting npabench mission=%s seed=%s entries=%s",
+            round_id,
+            roster.get("mission_id", MISSION_ID),
+            seed,
+            len(agent_specs),
+        )
         batch_report = evaluate_multiple_agents(
             agent_specs,
             mission_id=roster.get("mission_id", MISSION_ID),
@@ -182,6 +192,13 @@ def run_round_evaluation(wallet, api: APIClient, round_state: dict) -> dict:
 
         api.upload_bytes(report_slot["upload_url"], report_path.read_bytes())
         api.upload_bytes(recording_slot["upload_url"], recording_path.read_bytes())
+        log.info(
+            "round=%s: uploaded artifacts entry=%s score=%s status=%s",
+            round_id,
+            entry_id,
+            float(report.score),
+            report.status,
+        )
 
         rows.append(
             {
@@ -198,6 +215,7 @@ def run_round_evaluation(wallet, api: APIClient, round_state: dict) -> dict:
             }
         )
 
+    log.info("round=%s: uploading scoreboard rows=%s", round_id, len(rows))
     api.upload_scoreboard(
         round_id=round_id,
         validator_uid=validator_uid,
@@ -210,4 +228,3 @@ def run_round_evaluation(wallet, api: APIClient, round_state: dict) -> dict:
         "stake_weight": stake_weight,
         "rows": rows,
     }
-

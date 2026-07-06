@@ -32,11 +32,19 @@ from validator.loop import main_loop  # noqa: E402
 
 def _setup_logging() -> None:
     level = os.environ.get("NPA_LOG_LEVEL", "INFO").upper()
+    level_value = getattr(logging, level, logging.INFO)
     logging.basicConfig(
-        level=level,
+        level=level_value,
         format="%(asctime)s %(levelname)s %(name)s: %(message)s",
         datefmt="%H:%M:%S",
+        force=True,
     )
+    prefixes = ("npa", "validator", "shared")
+    for logger_name in ("npa", "npa.validator", "validator", "shared"):
+        logging.getLogger(logger_name).setLevel(level_value)
+    for logger_name, logger_obj in logging.root.manager.loggerDict.items():
+        if isinstance(logger_obj, logging.Logger) and logger_name.startswith(prefixes):
+            logger_obj.setLevel(level_value)
 
 
 def main() -> int:
@@ -46,8 +54,17 @@ def main() -> int:
     wallet_name = os.environ.get("NPA_WALLET", "default")
     wallet_hotkey = os.environ.get("NPA_HOTKEY", "default")
     wallet = chain.make_wallet(wallet_name, wallet_hotkey)
+    # bittensor mutates logging during wallet construction; restore our config
+    # so validator progress logs remain visible afterwards.
+    _setup_logging()
 
     log.info("hotkey=%s", wallet.hotkey.ss58_address)
+    log.info(
+        "wallet_name=%s wallet_hotkey=%s wallet_path=%s",
+        wallet_name,
+        wallet_hotkey,
+        os.environ.get("NPA_BT_WALLET_DIR", ""),
+    )
     log.info("netuid=%s network=%s api=%s", NETUID, NETWORK, API_URL)
     log.info("proxy_port=%s", PROXY_PORT)
 

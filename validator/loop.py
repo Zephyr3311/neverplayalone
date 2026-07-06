@@ -142,19 +142,27 @@ def main_loop(wallet, api: APIClient) -> None:
             continue
 
         evaluating_round = rounds.get("evaluating_round")
+        submission_round = rounds.get("submission_round")
+        log.info(
+            "round_state submission=%s evaluating=%s",
+            submission_round["round_id"] if submission_round else None,
+            evaluating_round["round_id"] if evaluating_round else None,
+        )
         if evaluating_round:
             round_id = evaluating_round["round_id"]
             if round_id not in evaluated_rounds:
                 try:
+                    log.info("round=%s: starting evaluation", round_id)
                     run_round_evaluation(wallet, api, evaluating_round)
                     evaluated_rounds.add(round_id)
                     log.info("round=%s evaluation uploaded", round_id)
                 except Exception as exc:
                     log.exception("round=%s evaluation failed: %s", round_id, exc)
 
-            deadline_block = int(evaluating_round["scoreboard_deadline_block"])
+            deadline_block = evaluating_round["scoreboard_deadline_block"]
             if chain.current_block() >= deadline_block and round_id not in consensus_rounds:
                 try:
+                    log.info("round=%s: starting consensus", round_id)
                     winner = _process_consensus(wallet, api, evaluating_round)
                     if winner is not None:
                         consensus_rounds.add(round_id)
