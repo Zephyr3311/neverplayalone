@@ -22,7 +22,7 @@ def _safe_dirname(raw: str) -> str:
     return "".join(ch if ch.isalnum() or ch in "._-" else "_" for ch in raw).strip("_") or "miner"
 
 
-def _workspace(round_id: int) -> Path:
+def _workspace(round_id: str) -> Path:
     root = Path(WORKSPACE_ROOT).resolve() / f"round_{round_id}"
     root.mkdir(parents=True, exist_ok=True)
     return root
@@ -87,7 +87,7 @@ def _write_proxy_usage(report, usage_summary: dict | None) -> None:
         report_path.write_text(json.dumps(report_data, indent=2))
 
 
-def _per_validator_seed(round_id: int, mission_id: str, validator_hotkey: str) -> int:
+def _per_validator_seed(round_id: str, mission_id: str, validator_hotkey: str) -> int:
     block_hash = chain.current_block_hash()
     material = f"{mission_id}:{round_id}:{block_hash}:{validator_hotkey}"
     return int(hashlib.sha256(material.encode("utf-8")).hexdigest(), 16)
@@ -96,7 +96,7 @@ def _per_validator_seed(round_id: int, mission_id: str, validator_hotkey: str) -
 def run_round_evaluation(wallet, api: APIClient, round_state: dict) -> dict:
     from npabench import AgentMode, AgentSpec, evaluate_multiple_agents
 
-    round_id = int(round_state["round_id"])
+    round_id = round_state["round_id"]  # date-based string id, e.g. "2026-07-06-AM"
     roster = api.get_round_roster(round_id)
     workspace = _workspace(round_id)
     local_entries = _materialize_agents(api, roster, workspace)

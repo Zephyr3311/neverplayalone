@@ -89,7 +89,7 @@ class APIClient:
     def get_current_rounds(self) -> dict:
         return self._get("/validator/rounds/current")
 
-    def get_round_roster(self, round_id: int) -> dict:
+    def get_round_roster(self, round_id: str) -> dict:
         return self._get_signed(f"/validator/rounds/{round_id}/roster")
 
     def download_bytes(self, url: str) -> bytes:
@@ -100,7 +100,7 @@ class APIClient:
     def request_artifact_slot(
         self,
         *,
-        round_id: int,
+        round_id: str,
         validator_uid: int,
         entry_id: str,
         entry_kind: str,
@@ -127,7 +127,7 @@ class APIClient:
     def upload_scoreboard(
         self,
         *,
-        round_id: int,
+        round_id: str,
         validator_uid: int,
         stake_weight: float,
         rows: list[dict],
@@ -142,20 +142,20 @@ class APIClient:
             },
         )
 
-    def list_round_scoreboards(self, round_id: int) -> list[dict]:
+    def list_round_scoreboards(self, round_id: str) -> list[dict]:
         return self._get_signed(f"/validator/rounds/{round_id}/scoreboards")
 
     def upload_consensus_result(
         self,
         *,
-        round_id: int,
+        round_id: str,
         validator_uid: int,
         top_miner_uid: int,
         top_miner_hotkey: str,
         winner_entry_id: str | None = None,
         winner_entry_kind: str | None = None,
         source_submission_id: str | None = None,
-        source_round_id: int | None = None,
+        source_round_id: str | None = None,
         champion_kept: bool = False,
     ) -> dict:
         return self._post_signed(

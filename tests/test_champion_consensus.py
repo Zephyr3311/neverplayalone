@@ -182,8 +182,9 @@ def test_process_consensus_reaffirms_champion_uid_when_kept(monkeypatch):
     _patch_chain(monkeypatch, weights)
     api = _FakeAPI(_champion_scoreboards(champion_score=10.0, challenger_score=12.0), margin=5.0)
 
-    result = _process_consensus(_FakeWallet(), api, {"round_id": 2})
+    result = _process_consensus(_FakeWallet(), api, {"round_id": "2026-07-06-AM"})
 
+    assert api.consensus["round_id"] == "2026-07-06-AM"  # date-based string id flows through
     assert api.consensus["champion_kept"] is True
     assert api.consensus["winner_entry_kind"] == "champion_defense"
     assert api.consensus["source_submission_id"] == "s1"
@@ -197,7 +198,7 @@ def test_process_consensus_sets_challenger_uid_when_dethroned(monkeypatch):
     _patch_chain(monkeypatch, weights)
     api = _FakeAPI(_champion_scoreboards(champion_score=10.0, challenger_score=20.0), margin=5.0)
 
-    result = _process_consensus(_FakeWallet(), api, {"round_id": 2})
+    result = _process_consensus(_FakeWallet(), api, {"round_id": "2026-07-06-AM"})
 
     assert api.consensus["champion_kept"] is False
     assert api.consensus["winner_entry_kind"] == "submission"
@@ -224,7 +225,7 @@ def test_process_consensus_applies_validator_burn_config(monkeypatch):
     _capture_weight_call(monkeypatch, captured)
 
     api = _FakeAPI(_champion_scoreboards(champion_score=10.0, challenger_score=20.0), margin=5.0)
-    _process_consensus(_FakeWallet(), api, {"round_id": 2})
+    _process_consensus(_FakeWallet(), api, {"round_id": "2026-07-06-AM"})
 
     assert captured == {"uid": 8, "burn_rate": 0.9, "burn_uid": 0}
 
@@ -236,6 +237,6 @@ def test_process_consensus_defaults_to_no_burn_when_unconfigured(monkeypatch):
     _capture_weight_call(monkeypatch, captured)
 
     api = _FakeAPI(_champion_scoreboards(champion_score=10.0, challenger_score=20.0), margin=5.0)
-    _process_consensus(_FakeWallet(), api, {"round_id": 2})
+    _process_consensus(_FakeWallet(), api, {"round_id": "2026-07-06-AM"})
 
     assert captured == {"uid": 8, "burn_rate": 0.0, "burn_uid": 0}

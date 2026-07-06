@@ -74,12 +74,12 @@ def status(
         typer.echo("submission_round: (none)")
         return
 
-    typer.echo(f"round_id:             {round_row['round_id']}")
-    typer.echo(f"status:               {round_row['status']}")
-    typer.echo(f"submission_open_at:   {round_row['submission_open_at']}")
-    typer.echo(f"evaluation_start_at:  {round_row['evaluation_start_at']}")
-    typer.echo(f"scoreboard_deadline:  {round_row['scoreboard_deadline_at']}")
-    typer.echo(f"round_end_at:         {round_row['round_end_at']}")
+    typer.echo(f"round_id:                 {round_row['round_id']}")
+    typer.echo(f"status:                   {round_row['status']}")
+    typer.echo(f"submission_open_block:    {round_row['submission_open_block']}")
+    typer.echo(f"evaluation_start_block:   {round_row['evaluation_start_block']}")
+    typer.echo(f"scoreboard_deadline_block:{round_row['scoreboard_deadline_block']}")
+    typer.echo(f"round_end_block:          {round_row['round_end_block']}")
 
 
 if __name__ == "__main__":
