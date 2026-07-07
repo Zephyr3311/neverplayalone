@@ -134,6 +134,58 @@ host port and is not reachable from the host LAN or the internet.
 ## Updating
 
 ```bash
-git pull
-./scripts/validator_setup.sh   # refreshes deps and the pinned npabench checkout
+./scripts/validator_update.sh
 ```
+
+`validator_update.sh`:
+
+1. fast-forwards the current branch from `origin`
+2. re-runs `validator_setup.sh` to refresh Python deps, the pinned
+   `vendor/neverplayalone_bench` checkout, and recorder dependencies
+3. optionally restarts your PM2 app if you pass `--pm2-name <name>` (or set
+   `NPA_PM2_NAME`)
+
+Examples:
+
+```bash
+./scripts/validator_update.sh --pm2-name validator
+NPA_PM2_NAME=validator ./scripts/validator_update.sh
+./scripts/validator_update.sh --no-restart
+```
+
+The script refuses to update a dirty worktree by default so it does not
+overwrite local changes. Override only when you know what you are doing:
+
+```bash
+NPA_ALLOW_DIRTY=1 ./scripts/validator_update.sh
+```
+
+## Auto-updating
+
+```bash
+source .venv/bin/activate
+pm2 start ./scripts/validator_autoupdate.sh --name validator-updater --interpreter bash
+```
+
+`validator_autoupdate.sh` is a permanent loop. Every
+`NPA_UPDATE_INTERVAL_SECONDS` (default `600`, i.e. 10 minutes) it:
+
+1. checks whether the local subnet repo differs from `origin/main`
+2. checks whether `vendor/neverplayalone_bench` differs from its tracked ref
+3. only proceeds when the validator is in the **early submission window**:
+   within `NPA_UPDATE_EARLY_WINDOW_BLOCKS` blocks (default `200`) from the
+   current submission round's `submission_open_block`
+4. runs `validator_update.sh --pm2-name <name>`
+
+This is intentionally simple: no validator runtime coordination, just a time
+gate based on the current submission round.
+
+Useful env vars:
+
+| Var | Default | Meaning |
+| --- | --- | --- |
+| `NPA_PM2_NAME` | `validator` | PM2 app restarted after update |
+| `NPA_UPDATE_SUBNET_BRANCH` | `main` | Subnet branch to track |
+| `NPA_BENCH_REF` | `main` | Bench ref to track |
+| `NPA_UPDATE_INTERVAL_SECONDS` | `600` | Drift check cadence |
+| `NPA_UPDATE_EARLY_WINDOW_BLOCKS` | `200` | Only restart within this many blocks after submission round open |
