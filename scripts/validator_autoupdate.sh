@@ -10,7 +10,7 @@ PM2_NAME="${NPA_PM2_NAME:-validator}"
 SUBNET_BRANCH="${NPA_UPDATE_SUBNET_BRANCH:-main}"
 BENCH_REF="${NPA_BENCH_REF:-main}"
 INTERVAL_SECONDS="${NPA_UPDATE_INTERVAL_SECONDS:-600}"
-EARLY_WINDOW_BLOCKS="${NPA_UPDATE_EARLY_WINDOW_BLOCKS:-200}"
+EARLY_WINDOW_BLOCKS="${NPA_UPDATE_EARLY_WINDOW_BLOCKS:-50}"
 
 usage() {
   cat <<'EOF'
@@ -21,7 +21,7 @@ Permanent loop that:
      - the subnet repo branch (default: origin/main)
      - vendor/neverplayalone_bench (default: origin/main)
   2. updates/restarts only when the current block is within
-     NPA_UPDATE_EARLY_WINDOW_BLOCKS blocks from the submission round start
+     NPA_UPDATE_EARLY_WINDOW_BLOCKS blocks before the next round start
   3. delegates the actual update to validator_update.sh
 
 Environment:
@@ -29,7 +29,7 @@ Environment:
   NPA_UPDATE_SUBNET_BRANCH=main          subnet branch to track
   NPA_BENCH_REF=main                     bench ref to track
   NPA_UPDATE_INTERVAL_SECONDS=600        drift check interval
-  NPA_UPDATE_EARLY_WINDOW_BLOCKS=200     restart window after submission start
+  NPA_UPDATE_EARLY_WINDOW_BLOCKS=50      restart window before round start
   NPA_UPDATE_LOCK_FILE=/tmp/...          flock file path
   NPA_ALLOW_DIRTY=1                      forwarded to validator_update.sh
 EOF
@@ -79,7 +79,7 @@ has_bench_drift() {
   return 1
 }
 
-in_early_submission_window() {
+in_prestart_window() {
   (
     cd "$ROOT_DIR"
     set -a
@@ -90,7 +90,7 @@ from shared import chain
 from shared.api_client import APIClient
 from validator.config import API_URL
 
-WINDOW = int(__import__("os").environ.get("NPA_UPDATE_EARLY_WINDOW_BLOCKS", "200"))
+WINDOW = int(__import__("os").environ.get("NPA_UPDATE_EARLY_WINDOW_BLOCKS", "50"))
 
 wallet = chain.make_wallet(
     __import__("os").environ.get("NPA_WALLET", "default"),
@@ -108,22 +108,25 @@ if not submission:
     raise SystemExit(1)
 
 current_block = int(chain.current_block())
-submission_open_block = int(submission["submission_open_block"])
-distance = current_block - submission_open_block
+round_start_block = int(submission["evaluation_start_block"])
+blocks_until_start = round_start_block - current_block
 
-if distance < 0:
-    print(f"before_submission_start current_block={current_block} submission_open_block={submission_open_block}")
-    raise SystemExit(1)
-if distance > WINDOW:
+if blocks_until_start <= 0:
     print(
-        f"outside_early_window round={submission['round_id']} current_block={current_block} "
-        f"submission_open_block={submission_open_block} distance={distance} window={WINDOW}"
+        f"round_already_started round={submission['round_id']} current_block={current_block} "
+        f"round_start_block={round_start_block}"
+    )
+    raise SystemExit(1)
+if blocks_until_start > WINDOW:
+    print(
+        f"outside_prestart_window round={submission['round_id']} current_block={current_block} "
+        f"round_start_block={round_start_block} blocks_until_start={blocks_until_start} window={WINDOW}"
     )
     raise SystemExit(1)
 
 print(
-    f"inside_early_window round={submission['round_id']} current_block={current_block} "
-    f"submission_open_block={submission_open_block} distance={distance} window={WINDOW}"
+    f"inside_prestart_window round={submission['round_id']} current_block={current_block} "
+    f"round_start_block={round_start_block} blocks_until_start={blocks_until_start} window={WINDOW}"
 )
 PY
   )
@@ -151,7 +154,7 @@ main() {
   exec 9>"$LOCK_FILE"
   flock -n 9 || { echo "error: validator_autoupdate.sh already running" >&2; exit 1; }
 
-  log "autoupdate loop started pm2=${PM2_NAME} subnet_branch=${SUBNET_BRANCH} bench_ref=${BENCH_REF} interval=${INTERVAL_SECONDS}s early_window_blocks=${EARLY_WINDOW_BLOCKS}"
+  log "autoupdate loop started pm2=${PM2_NAME} subnet_branch=${SUBNET_BRANCH} bench_ref=${BENCH_REF} interval=${INTERVAL_SECONDS}s prestart_window_blocks=${EARLY_WINDOW_BLOCKS}"
   while true; do
     subnet_drift=0
     bench_drift=0
@@ -164,7 +167,7 @@ main() {
     fi
 
     if [[ "$subnet_drift" -eq 1 || "$bench_drift" -eq 1 ]]; then
-      if window_msg="$(in_early_submission_window 2>&1)"; then
+      if window_msg="$(in_prestart_window 2>&1)"; then
         log "$window_msg"
         if run_update; then
           :

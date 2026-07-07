@@ -172,13 +172,13 @@ pm2 start ./scripts/validator_autoupdate.sh --name validator-updater --interpret
 
 1. checks whether the local subnet repo differs from `origin/main`
 2. checks whether `vendor/neverplayalone_bench` differs from its tracked ref
-3. only proceeds when the validator is in the **early submission window**:
-   within `NPA_UPDATE_EARLY_WINDOW_BLOCKS` blocks (default `200`) from the
-   current submission round's `submission_open_block`
+3. only proceeds when the validator is in the **pre-start window**:
+   within `NPA_UPDATE_EARLY_WINDOW_BLOCKS` blocks (default `50`) before the
+   current submission round's `evaluation_start_block`
 4. runs `validator_update.sh --pm2-name <name>`
 
 This is intentionally simple: no validator runtime coordination, just a time
-gate based on the current submission round.
+gate based on the next round start block.
 
 Useful env vars:
 
@@ -188,4 +188,4 @@ Useful env vars:
 | `NPA_UPDATE_SUBNET_BRANCH` | `main` | Subnet branch to track |
 | `NPA_BENCH_REF` | `main` | Bench ref to track |
 | `NPA_UPDATE_INTERVAL_SECONDS` | `600` | Drift check cadence |
-| `NPA_UPDATE_EARLY_WINDOW_BLOCKS` | `200` | Only restart within this many blocks after submission round open |
+| `NPA_UPDATE_EARLY_WINDOW_BLOCKS` | `50` | Only restart within this many blocks before the next round start |
