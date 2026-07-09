@@ -14,6 +14,27 @@ See the [README](../README.md#incentive-mechanism) for the full mechanism.
 - A registered validator hotkey with stake
 - `OPENROUTER_API_KEY` if you enable the LLM proxy for miner agents
 
+### Computing Requirements
+
+Validator load scales mostly with `NPA_MAX_PARALLEL_AGENTS`. Each parallel
+slot runs a Minecraft server container plus one sandboxed miner agent, and
+recording/proxy sidecars add smaller overhead.
+
+Recommended production baseline:
+
+- CPU: 8 vCPU or more
+- Memory: 16 GB RAM minimum; 32 GB recommended for stable multi-agent rounds
+- Disk: 100 GB free SSD/NVMe space for Docker images, workspaces, reports, and
+  recordings
+- Network: stable outbound access to the API, Bittensor node, Docker registry,
+  object storage, and configured LLM provider
+- Runtime: Docker Engine, Node.js 20+, npm, Python 3.11/3.12 via `uv`
+
+For small local tests, 4 vCPU and 8 GB RAM can work with
+`NPA_MAX_PARALLEL_AGENTS=1`, but it is not a good production target.
+If evaluations fail with container startup errors, OOM kills, or port/resource
+contention, reduce `NPA_MAX_PARALLEL_AGENTS` first.
+
 ## Setup
 
 ```bash
@@ -70,7 +91,7 @@ All knobs:
 | `OPENROUTER_API_KEY` / `CHUTES_API_KEY` | unset | Provider keys — fund one (that provider only) or both (miners pick per request); ≥1 required |
 | `NPA_PROXY_PORT` | `8080` | Container-internal port the proxy listens on (not published to the host) |
 | _(allowlist)_ | — | Pinned in `docker/proxy/model_pairs.json` (also cross-provider model map) |
-| `NPA_PROXY_MAX_TOTAL_SPEND_USD` | `1.0` | Max total proxy spend per miner run |
+| `NPA_PROXY_MAX_TOTAL_SPEND_USD` | `0.05` | Max total proxy spend per miner run |
 | _(model prices)_ | — | Pinned per-provider in `docker/proxy/model_pairs.json` |
 | `NPA_LOG_LEVEL` | `INFO` | Log level |
 
