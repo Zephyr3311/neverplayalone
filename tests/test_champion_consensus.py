@@ -1,7 +1,14 @@
 from __future__ import annotations
 
 import validator.loop as loop
-from validator.loop import _process_consensus, _select_winner, _weighted_entry_scores
+from validator.loop import (
+    _epoch_end_block,
+    _evaluation_cutoff_block,
+    _process_consensus,
+    _select_winner,
+    _weight_epoch_index,
+    _weighted_entry_scores,
+)
 
 
 def _entry(entry_id: str, kind: str, uid: int, score: float, hotkey: str | None = None) -> dict:
@@ -14,6 +21,35 @@ def _entry(entry_id: str, kind: str, uid: int, score: float, hotkey: str | None 
         "source_round_id": 1,
         "score": score,
     }
+
+
+def _round_state(start=1000, deadline=2500, end=2800):
+    return {
+        "round_id": "2026-07-06-AM",
+        "evaluation_start_block": start,
+        "scoreboard_deadline_block": deadline,
+        "round_end_block": end,
+    }
+
+
+def test_evaluation_cutoff_defaults_to_half_round():
+    assert _evaluation_cutoff_block(_round_state(start=1000, end=2800)) == 1900
+
+
+def test_weight_epoch_index_is_round_relative():
+    state = _round_state(start=1000, end=2800)
+    assert _weight_epoch_index(state, 999) is None
+    assert _weight_epoch_index(state, 1000) == 0
+    assert _weight_epoch_index(state, 1359) == 0
+    assert _weight_epoch_index(state, 1360) == 1
+    assert _weight_epoch_index(state, 2800) is None
+
+
+def test_deadline_containing_epoch_can_be_reserved_for_current_consensus():
+    state = _round_state(start=1000, deadline=2500, end=2800)
+    epoch = _weight_epoch_index(state, 2440)
+    assert epoch == 4
+    assert _epoch_end_block(state, epoch) > state["scoreboard_deadline_block"]
 
 
 def test_champion_kept_within_margin():

@@ -9,6 +9,10 @@ API_URL = os.environ.get("NPA_API_URL", "https://api.neverplayalone.ai")
 
 MISSION_ID = os.environ.get("NPA_MISSION_ID", "resource_gathering")
 LOOP_POLL_SECONDS = int(os.environ.get("NPA_LOOP_POLL_SECONDS", "12"))
+WEIGHT_EPOCH_BLOCKS = int(os.environ.get("NPA_WEIGHT_EPOCH_BLOCKS", "360"))
+EVALUATION_START_CUTOFF_RATIO = float(
+    os.environ.get("NPA_EVALUATION_START_CUTOFF_RATIO", "0.5")
+)
 WORKSPACE_ROOT = os.environ.get("NPA_WORKSPACE_ROOT", "/tmp/npa_validator")
 MAX_PARALLEL_AGENTS = int(os.environ.get("NPA_MAX_PARALLEL_AGENTS", "4"))
 BURN_RATE = float(os.environ.get("NPA_BURN_RATE", "0.9"))
