@@ -150,15 +150,18 @@ def set_winner_weights(
     raw_weights = compute_weight_vector(count, winner_uid, burn_rate, burn_uid)
 
     try:
+        import numpy as np
         from bittensor.utils.weight_utils import (
             convert_weights_and_uids_for_emit,
             process_weights_for_netuid,
         )
 
+        uids = np.asarray(getattr(metagraph, "uids", raw_uids), dtype=np.int64)
+        weights = np.asarray(raw_weights, dtype=np.float32)
         emit_uids, emit_weights = convert_weights_and_uids_for_emit(
             *process_weights_for_netuid(
-                uids=getattr(metagraph, "uids", raw_uids),
-                weights=raw_weights,
+                uids=uids,
+                weights=weights,
                 netuid=NETUID,
                 subtensor=get_subtensor(),
                 metagraph=metagraph,

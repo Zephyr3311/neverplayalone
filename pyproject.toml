@@ -12,6 +12,7 @@ license = { text = "MIT" }
 dependencies = [
     "bittensor>=8.0",
     "httpx>=0.27",
+    "numpy>=1.24",
     "typer>=0.12",
 ]
 # Validators must additionally install npabench; scripts/validator_setup.sh
