@@ -12,7 +12,8 @@ See the [README](../README.md#incentive-mechanism) for the full mechanism.
   Docker, and Node.js/npm if they are missing (npabench uses Docker for the
   Minecraft server and miner sandboxes; the recorder is a Node tool)
 - A registered validator hotkey with stake
-- `OPENROUTER_API_KEY` if you enable the LLM proxy for miner agents
+- `OPENROUTER_API_KEY` and `CHUTES_API_KEY` for npabench task generation and
+  the miner-agent LLM proxy. Production validators should fund both providers.
 
 ### Computing Requirements
 
@@ -73,8 +74,9 @@ Edit `.env`:
 - `NPA_BT_WALLET_DIR` — your `~/.bittensor` path if not using the default
   wallet root
 - `NPA_WALLET` / `NPA_HOTKEY` — the wallet registered above
-- `OPENROUTER_API_KEY` (or `CHUTES_API_KEY`) — **required**; the LLM proxy runs
-  every round and needs a provider key
+- `OPENROUTER_API_KEY` and `CHUTES_API_KEY` — **required for production**; the
+  LLM proxy runs every round. One key is enough only for local/single-provider
+  testing.
 
 All knobs:
 
@@ -86,13 +88,20 @@ All knobs:
 | `NPA_HOTKEY` | `default` | Hotkey name |
 | `NPA_MISSION_ID` | `resource_gathering` | npabench mission id |
 | `NPA_LOOP_POLL_SECONDS` | `12` | Validator loop poll cadence |
+| `NPA_WEIGHT_EPOCH_BLOCKS` | `360` | Round-relative block interval for validator weight updates |
+| `NPA_EVALUATION_START_CUTOFF_RATIO` | `0.5` | Skip evaluation if the validator starts after this fraction of the round |
 | `NPA_WORKSPACE_ROOT` | `/tmp/npa_validator` | Local validator round workspace |
-| `NPA_MAX_PARALLEL_AGENTS` | `2` | Parallel npabench agent slots |
-| `OPENROUTER_API_KEY` / `CHUTES_API_KEY` | unset | Provider keys — fund one (that provider only) or both (miners pick per request); ≥1 required |
+| `NPA_MAX_PARALLEL_AGENTS` | `4` | Parallel npabench agent slots |
+| `OPENROUTER_API_KEY` / `CHUTES_API_KEY` | unset | Provider keys — production should fund both; one key limits miners to that provider |
 | `NPA_PROXY_PORT` | `8080` | Container-internal port the proxy listens on (not published to the host) |
 | _(allowlist)_ | — | Pinned in `docker/proxy/model_pairs.json` (also cross-provider model map) |
 | `NPA_PROXY_MAX_TOTAL_SPEND_USD` | `0.05` | Max total proxy spend per miner run |
 | _(model prices)_ | — | Pinned per-provider in `docker/proxy/model_pairs.json` |
+| `NPABENCH_PROMPT_PROVIDER` | `openrouter` | Provider used for task prompt generation (`openrouter` or `chutes`) |
+| `NPABENCH_PROMPT_MODEL` | `openai/gpt-4.1-mini` | Model id for task prompt generation |
+| `NPABENCH_PROMPT_TEMPERATURE` | `0` | Task prompt generation temperature |
+| `NPABENCH_PROMPT_MAX_TOKENS` | `180` | Task prompt generation max output tokens |
+| `NPABENCH_PROMPT_TIMEOUT_SECONDS` | `8` | Task prompt generation request timeout |
 | `NPA_LOG_LEVEL` | `INFO` | Log level |
 
 ## Run
@@ -110,20 +119,27 @@ Minecraft server and the sandboxed miner agents.
 
 ## What happens each round
 
-1. The loop polls the backend for the current round windows.
-2. When a round enters evaluation, the validator downloads the round roster —
+1. The loop polls the backend for the current round windows and current block.
+2. If the validator starts before the evaluation cutoff
+   (`NPA_EVALUATION_START_CUTOFF_RATIO`, default half-round), it downloads the
+   round roster —
    the same derived manifest every validator sees, containing every admitted
    entry (miner submissions plus the reigning champion's defense entry).
-3. Each agent archive is safety-checked, extracted, and evaluated with
+3. If it starts after the cutoff, it skips local evaluation for that round and
+   waits for the consensus/weight phases instead.
+4. Each agent archive is safety-checked, extracted, and evaluated with
    `npabench.evaluate_multiple_agents(...)` using a per-validator seed derived
    from the chain block hash, so runs are deterministic per validator but not
    predictable by miners in advance.
-4. Per entry, the validator uploads a `report.json` and a `recording.mcpr`,
+5. Per entry, the validator uploads a `report.json` and a `recording.mcpr`,
    then one raw scoreboard for the round.
-5. After the scoreboard deadline, the validator downloads all scoreboards,
+6. Before the scoreboard deadline, validator weight updates use the previous
+   champion at `NPA_WEIGHT_EPOCH_BLOCKS` intervals.
+7. After the scoreboard deadline, the validator downloads all scoreboards,
    applies stake-weighted averaging, applies the champion-defense margin rule,
-   uploads its consensus result, and sets a winner-take-all weight vector on
-   chain.
+   uploads its consensus result, and sets weights to the current winner. The
+   epoch containing the scoreboard deadline is reserved for this post-deadline
+   consensus update.
 
 Round workspaces live under `NPA_WORKSPACE_ROOT` (one directory per round)
 and can be deleted after a round completes.
@@ -134,11 +150,12 @@ Miner sandboxes run on per-slot `--internal` Docker networks with no internet
 access. Each round starts an **egress-proxy
 container** that npabench attaches to those networks, so the sandbox reaches it
 by container DNS (`http://npa-proxy-round-<id>:8080/v1`) and never touches the
-host. The proxy is the sandbox's only route to OpenRouter:
+host. The proxy is the sandbox's only route to OpenRouter and Chutes:
 
-- your real `OPENROUTER_API_KEY` lives only inside the proxy container — each
-  agent gets a per-session token, injected as `OPENROUTER_BASE_URL`/`OPENAI_BASE_URL`
-  plus a matching key (any OpenAI-compatible client picks these up from env)
+- your real `OPENROUTER_API_KEY` and/or `CHUTES_API_KEY` live only inside the
+  proxy container — each agent gets a per-session token, injected as
+  `OPENROUTER_BASE_URL`/`OPENAI_BASE_URL` plus matching keys (any
+  OpenAI-compatible client picks these up from env)
 - requests are restricted to chat/completions-style endpoints and to the models
   pinned in `docker/proxy/model_pairs.json`; the proxy routes each request to the
   provider whose id the agent used (when you fund both keys, the miner picks the

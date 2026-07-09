@@ -115,6 +115,6 @@ fi
 
 echo
 echo "Setup complete (npabench @ $(git -C "$BENCH_DIR" rev-parse --short HEAD))."
-echo "Edit .env (NPA_WALLET / NPA_HOTKEY / OPENROUTER_API_KEY), then start the validator:"
+echo "Edit .env (NPA_WALLET / NPA_HOTKEY / OPENROUTER_API_KEY / CHUTES_API_KEY), then start the validator:"
 echo "  source .venv/bin/activate"
 echo "  ${PM2} start validator/main.py"
