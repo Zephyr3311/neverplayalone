@@ -3,22 +3,39 @@ set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 SETUP_SCRIPT="${ROOT_DIR}/scripts/validator_setup.sh"
-PM2_NAME="${NPA_PM2_NAME:-}"
+
+if [[ -f "${ROOT_DIR}/.env" ]]; then
+  set -a
+  # shellcheck disable=SC1091
+  source "${ROOT_DIR}/.env"
+  set +a
+fi
+
+PM2_NAME="${NPA_VALIDATOR_PM2_NAME:-${NPA_PM2_NAME:-}}"
 RESTART_PM2=1
+VALIDATOR_ENTRYPOINT="${NPA_VALIDATOR_ENTRYPOINT:-${ROOT_DIR}/validator/main.py}"
+VALIDATOR_INTERPRETER="${NPA_VALIDATOR_INTERPRETER:-${ROOT_DIR}/.venv/bin/python}"
 
 usage() {
   cat <<'EOF'
 Usage: ./scripts/validator_update.sh [--pm2-name NAME] [--no-restart]
 
 Fast-forwards the current git branch, re-runs validator_setup.sh to refresh
-Python/npabench/recorder dependencies, and optionally restarts the PM2 process.
+Python/npabench/recorder dependencies, and optionally restarts or starts the
+validator PM2 process.
 
 Options:
-  --pm2-name NAME  Restart this PM2 app after updating.
+  --pm2-name NAME  Restart this PM2 app after updating, or start it if missing.
   --no-restart     Skip PM2 restart even if --pm2-name is provided.
 
 Environment:
-  NPA_PM2_NAME     Default PM2 process name to restart.
+  NPA_VALIDATOR_PM2_NAME
+                   Default validator PM2 process name to restart/start.
+  NPA_PM2_NAME     Legacy fallback for NPA_VALIDATOR_PM2_NAME.
+  NPA_VALIDATOR_ENTRYPOINT
+                   Validator entrypoint passed to pm2 start.
+  NPA_VALIDATOR_INTERPRETER
+                   Python interpreter passed to pm2 start.
   NPA_ALLOW_DIRTY=1
                    Allow updates even if the repo has uncommitted changes.
 EOF
@@ -51,6 +68,26 @@ require() { command -v "$1" >/dev/null 2>&1; }
 
 require git || { echo "error: git is required" >&2; exit 1; }
 
+restart_or_start_pm2() {
+  if ! require pm2; then
+    echo "warning: pm2 not found; skipped restart/start for ${PM2_NAME}" >&2
+    return 0
+  fi
+
+  if pm2 describe "$PM2_NAME" >/dev/null 2>&1; then
+    echo "Restarting PM2 process: ${PM2_NAME}"
+    pm2 restart "$PM2_NAME" --update-env
+    return 0
+  fi
+
+  echo "Starting PM2 process: ${PM2_NAME}"
+  pm2 start "$VALIDATOR_ENTRYPOINT" \
+    --name "$PM2_NAME" \
+    --interpreter "$VALIDATOR_INTERPRETER" \
+    --cwd "$ROOT_DIR" \
+    --update-env
+}
+
 cd "$ROOT_DIR"
 
 if [[ "${NPA_ALLOW_DIRTY:-0}" != "1" ]] && [[ -n "$(git status --short)" ]]; then
@@ -77,14 +114,9 @@ echo "Refreshing validator environment"
 "$SETUP_SCRIPT"
 
 if [[ "$RESTART_PM2" -eq 1 && -n "$PM2_NAME" ]]; then
-  if require pm2; then
-    echo "Restarting PM2 process: ${PM2_NAME}"
-    pm2 restart "$PM2_NAME" --update-env
-  else
-    echo "warning: pm2 not found; skipped restart for ${PM2_NAME}" >&2
-  fi
+  restart_or_start_pm2
 elif [[ "$RESTART_PM2" -eq 1 ]]; then
-  echo "No PM2 process name supplied; skipped restart"
+  echo "No PM2 process name supplied; skipped restart/start"
 fi
 
 echo "Validator update complete."

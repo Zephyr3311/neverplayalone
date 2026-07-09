@@ -18,7 +18,7 @@ BURN_UID = int(os.environ.get("NPA_BURN_UID", "0"))
 PROXY_PORT = int(os.environ.get("NPA_PROXY_PORT", "8080"))
 OPENROUTER_API_KEY = os.environ.get("OPENROUTER_API_KEY", "")
 CHUTES_API_KEY = os.environ.get("CHUTES_API_KEY", "")
-PROXY_MAX_TOTAL_SPEND_USD = float(os.environ.get("NPA_PROXY_MAX_TOTAL_SPEND_USD", "0.5"))
+PROXY_MAX_TOTAL_SPEND_USD = float(os.environ.get("NPA_PROXY_MAX_TOTAL_SPEND_USD", "0.05"))
 PROXY_UPSTREAM_TIMEOUT_SECONDS = float(
     os.environ.get("NPA_PROXY_UPSTREAM_TIMEOUT_SECONDS", "60")
 )

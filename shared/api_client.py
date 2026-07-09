@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import os
 import time
 import uuid
 from pathlib import Path
@@ -12,10 +13,11 @@ API_URL = "https://api.neverplayalone.ai"
 
 
 class APIClient:
-    def __init__(self, wallet, base_url: str = API_URL, timeout: float = 60.0):
+    def __init__(self, wallet, base_url: str = API_URL, timeout: float | None = None):
         self.wallet = wallet
         self.base_url = base_url.rstrip("/")
-        self._client = httpx.Client(timeout=timeout)
+        timeout_seconds = timeout if timeout is not None else float(os.environ.get("NPA_API_TIMEOUT_SECONDS", "180"))
+        self._client = httpx.Client(timeout=timeout_seconds)
 
     def close(self) -> None:
         self._client.close()

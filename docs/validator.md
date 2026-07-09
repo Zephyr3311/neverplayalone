@@ -142,14 +142,15 @@ host port and is not reachable from the host LAN or the internet.
 1. fast-forwards the current branch from `origin`
 2. re-runs `validator_setup.sh` to refresh Python deps, the pinned
    `vendor/neverplayalone_bench` checkout, and recorder dependencies
-3. optionally restarts your PM2 app if you pass `--pm2-name <name>` (or set
-   `NPA_PM2_NAME`)
+3. optionally restarts your validator PM2 app if you pass `--pm2-name <name>`
+   (or set `NPA_VALIDATOR_PM2_NAME`), or starts it if that PM2 process does
+   not exist yet
 
 Examples:
 
 ```bash
 ./scripts/validator_update.sh --pm2-name validator
-NPA_PM2_NAME=validator ./scripts/validator_update.sh
+NPA_VALIDATOR_PM2_NAME=validator ./scripts/validator_update.sh
 ./scripts/validator_update.sh --no-restart
 ```
 
@@ -175,7 +176,20 @@ pm2 start ./scripts/validator_autoupdate.sh --name validator-updater --interpret
 3. only proceeds when the validator is in the **pre-start window**:
    within `NPA_UPDATE_EARLY_WINDOW_BLOCKS` blocks (default `50`) before the
    current submission round's `evaluation_start_block`
-4. runs `validator_update.sh --pm2-name <name>`
+4. runs `validator_update.sh --pm2-name <name>`; the update script restarts
+   that PM2 process, or starts the validator if the process is missing
+
+On boot, `validator_autoupdate.sh` also ensures the validator process exists
+under `NPA_VALIDATOR_PM2_NAME` by starting `validator/main.py` with the repo
+venv Python. Set `NPA_AUTOSTART_VALIDATOR=0` to disable that behavior.
+
+The updater PM2 process has its own PM2 name from the `pm2 start --name`
+argument. A typical setup is:
+
+```bash
+NPA_VALIDATOR_PM2_NAME=validator
+pm2 start ./scripts/validator_autoupdate.sh --name validator-updater --interpreter bash
+```
 
 This is intentionally simple: no validator runtime coordination, just a time
 gate based on the next round start block.
@@ -184,7 +198,11 @@ Useful env vars:
 
 | Var | Default | Meaning |
 | --- | --- | --- |
-| `NPA_PM2_NAME` | `validator` | PM2 app restarted after update |
+| `NPA_VALIDATOR_PM2_NAME` | `validator` | Validator PM2 app started/restarted after update |
+| `NPA_PM2_NAME` | unset | Legacy fallback for `NPA_VALIDATOR_PM2_NAME` |
+| `NPA_AUTOSTART_VALIDATOR` | `1` | Start the validator PM2 app when the updater boots and it is missing |
+| `NPA_VALIDATOR_ENTRYPOINT` | `validator/main.py` | Entrypoint used when starting the validator with PM2 |
+| `NPA_VALIDATOR_INTERPRETER` | `.venv/bin/python` | Python interpreter used when starting the validator with PM2 |
 | `NPA_UPDATE_SUBNET_BRANCH` | `main` | Subnet branch to track |
 | `NPA_BENCH_REF` | `main` | Bench ref to track |
 | `NPA_UPDATE_INTERVAL_SECONDS` | `600` | Drift check cadence |

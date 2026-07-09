@@ -4,9 +4,19 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 UPDATE_SCRIPT="${ROOT_DIR}/scripts/validator_update.sh"
 BENCH_DIR="${ROOT_DIR}/vendor/neverplayalone_bench"
-LOCK_FILE="${NPA_UPDATE_LOCK_FILE:-/tmp/npa_validator_autoupdate.lock}"
 
-PM2_NAME="${NPA_PM2_NAME:-validator}"
+if [[ -f "${ROOT_DIR}/.env" ]]; then
+  set -a
+  # shellcheck disable=SC1091
+  source "${ROOT_DIR}/.env"
+  set +a
+fi
+
+LOCK_FILE="${NPA_UPDATE_LOCK_FILE:-/tmp/npa_validator_autoupdate.lock}"
+VALIDATOR_PM2_NAME="${NPA_VALIDATOR_PM2_NAME:-${NPA_PM2_NAME:-validator}}"
+VALIDATOR_ENTRYPOINT="${NPA_VALIDATOR_ENTRYPOINT:-${ROOT_DIR}/validator/main.py}"
+VALIDATOR_INTERPRETER="${NPA_VALIDATOR_INTERPRETER:-${ROOT_DIR}/.venv/bin/python}"
+AUTOSTART_VALIDATOR="${NPA_AUTOSTART_VALIDATOR:-1}"
 SUBNET_BRANCH="${NPA_UPDATE_SUBNET_BRANCH:-main}"
 BENCH_REF="${NPA_BENCH_REF:-main}"
 INTERVAL_SECONDS="${NPA_UPDATE_INTERVAL_SECONDS:-600}"
@@ -25,7 +35,11 @@ Permanent loop that:
   3. delegates the actual update to validator_update.sh
 
 Environment:
-  NPA_PM2_NAME=validator                 PM2 app to restart
+  NPA_VALIDATOR_PM2_NAME=validator       PM2 validator app to start/restart
+  NPA_PM2_NAME=validator                 legacy fallback for NPA_VALIDATOR_PM2_NAME
+  NPA_AUTOSTART_VALIDATOR=1              start validator on updater boot if missing
+  NPA_VALIDATOR_ENTRYPOINT=...           validator entrypoint passed to pm2 start
+  NPA_VALIDATOR_INTERPRETER=...          Python interpreter passed to pm2 start
   NPA_UPDATE_SUBNET_BRANCH=main          subnet branch to track
   NPA_BENCH_REF=main                     bench ref to track
   NPA_UPDATE_INTERVAL_SECONDS=600        drift check interval
@@ -136,10 +150,38 @@ run_update() {
   log "running validator update via ${UPDATE_SCRIPT}"
   (
     cd "$ROOT_DIR"
-    export NPA_PM2_NAME="$PM2_NAME"
-    "$UPDATE_SCRIPT" --pm2-name "$PM2_NAME"
+    export NPA_VALIDATOR_PM2_NAME="$VALIDATOR_PM2_NAME"
+    export NPA_PM2_NAME="$VALIDATOR_PM2_NAME"
+    export NPA_VALIDATOR_ENTRYPOINT="$VALIDATOR_ENTRYPOINT"
+    export NPA_VALIDATOR_INTERPRETER="$VALIDATOR_INTERPRETER"
+    "$UPDATE_SCRIPT" --pm2-name "$VALIDATOR_PM2_NAME"
   )
   log "validator update complete"
+}
+
+ensure_validator_pm2() {
+  if [[ "$AUTOSTART_VALIDATOR" != "1" ]]; then
+    log "validator autostart disabled validator_pm2=${VALIDATOR_PM2_NAME}"
+    return 0
+  fi
+  if ! require pm2; then
+    log "pm2 not found; validator autostart skipped validator_pm2=${VALIDATOR_PM2_NAME}"
+    return 0
+  fi
+  if pm2 describe "$VALIDATOR_PM2_NAME" >/dev/null 2>&1; then
+    log "validator PM2 process already exists validator_pm2=${VALIDATOR_PM2_NAME}"
+    return 0
+  fi
+
+  log "starting validator PM2 process validator_pm2=${VALIDATOR_PM2_NAME} entrypoint=${VALIDATOR_ENTRYPOINT}"
+  (
+    cd "$ROOT_DIR"
+    pm2 start "$VALIDATOR_ENTRYPOINT" \
+      --name "$VALIDATOR_PM2_NAME" \
+      --interpreter "$VALIDATOR_INTERPRETER" \
+      --cwd "$ROOT_DIR" \
+      --update-env
+  )
 }
 
 main() {
@@ -154,7 +196,9 @@ main() {
   exec 9>"$LOCK_FILE"
   flock -n 9 || { echo "error: validator_autoupdate.sh already running" >&2; exit 1; }
 
-  log "autoupdate loop started pm2=${PM2_NAME} subnet_branch=${SUBNET_BRANCH} bench_ref=${BENCH_REF} interval=${INTERVAL_SECONDS}s prestart_window_blocks=${EARLY_WINDOW_BLOCKS}"
+  log "autoupdate loop started validator_pm2=${VALIDATOR_PM2_NAME} subnet_branch=${SUBNET_BRANCH} bench_ref=${BENCH_REF} interval=${INTERVAL_SECONDS}s prestart_window_blocks=${EARLY_WINDOW_BLOCKS} autostart_validator=${AUTOSTART_VALIDATOR}"
+  ensure_validator_pm2
+
   while true; do
     subnet_drift=0
     bench_drift=0

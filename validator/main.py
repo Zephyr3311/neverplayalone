@@ -39,8 +39,8 @@ def _setup_logging() -> None:
         datefmt="%H:%M:%S",
         force=True,
     )
-    prefixes = ("npa", "validator", "shared")
-    for logger_name in ("npa", "npa.validator", "validator", "shared"):
+    prefixes = ("npa", "validator", "shared", "npabench")
+    for logger_name in ("npa", "npa.validator", "validator", "shared", "npabench"):
         logging.getLogger(logger_name).setLevel(level_value)
     for logger_name, logger_obj in logging.root.manager.loggerDict.items():
         if isinstance(logger_obj, logging.Logger) and logger_name.startswith(prefixes):
