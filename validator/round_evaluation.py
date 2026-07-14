@@ -12,7 +12,7 @@ from pathlib import Path, PurePosixPath
 from shared import chain
 from shared.api_client import APIClient
 
-from validator.config import MAX_PARALLEL_AGENTS, MISSION_ID, WORKSPACE_ROOT
+from validator.config import MAX_PARALLEL_AGENTS, MISSION_ID, TASKS_PER_ROUND, WORKSPACE_ROOT
 from validator.proxy import ProxyContainer
 
 log = logging.getLogger(__name__)
@@ -93,6 +93,14 @@ def _per_validator_seed(round_id: str, mission_id: str, validator_hotkey: str) -
     return int(hashlib.sha256(material.encode("utf-8")).hexdigest(), 16)
 
 
+def _aggregate_status(statuses: list[str]) -> str:
+    """Combine per-task statuses into one scoreboard status: ``ok`` if the agent
+    produced a good run in any task, otherwise the first non-ok status seen."""
+    if "ok" in statuses:
+        return "ok"
+    return statuses[0] if statuses else "error"
+
+
 def run_round_evaluation(wallet, api: APIClient, round_state: dict) -> dict:
     from npabench import AgentMode, AgentSpec, evaluate_multiple_agents
 
@@ -108,11 +116,7 @@ def run_round_evaluation(wallet, api: APIClient, round_state: dict) -> dict:
         return {"round_id": round_id, "rows": []}
 
     validator_hotkey = wallet.hotkey.ss58_address
-    seed = _per_validator_seed(
-        round_id,
-        roster.get("mission_id", MISSION_ID),
-        validator_hotkey,
-    )
+    mission_id = roster.get("mission_id", MISSION_ID)
     validator_uid = chain.hotkey_uid(validator_hotkey)
     stake_weight = chain.self_stake_for_hotkey(
         validator_hotkey,
@@ -123,83 +127,119 @@ def run_round_evaluation(wallet, api: APIClient, round_state: dict) -> dict:
         container_name=f"npa-proxy-round-{round_id}",
         workspace=workspace,
     )
-    session_ids: dict[str, str] = {}
-    agent_env_by_entry: dict[str, dict[str, str]] = {}
+    # One proxy session per (entry, task): each task gets its own spend budget, so
+    # a miner's total budget for the round is TASKS_PER_ROUND x the per-run cap.
+    # All sessions must be minted before the proxy starts.
+    sessions: dict[tuple[str, int], object] = {}
     for entry_id in local_entries:
-        session = proxy.mint_session(f"round={round_id}:{entry_id}")
-        session_ids[entry_id] = session.session_id
-        agent_env_by_entry[entry_id] = session.env
-
-    agent_specs = [
-        AgentSpec(
-            name=entry["spec_name"],
-            path=entry["agent_dir"],
-            env=agent_env_by_entry.get(entry_id),
-        )
-        for entry_id, entry in local_entries.items()
-    ]
+        for task_index in range(TASKS_PER_ROUND):
+            sessions[(entry_id, task_index)] = proxy.mint_session(
+                f"round={round_id}:{entry_id}:task={task_index}"
+            )
     sidecar_containers = (proxy.name,)
+
+    # Per-entry accumulators across the TASKS_PER_ROUND evaluations. Each task uses
+    # a fresh chain-block-hash seed (the block advances between the multi-minute
+    # evals), so every task is a distinct, unpredictable mission instance.
+    task_scores: dict[str, list[float]] = {entry_id: [] for entry_id in local_entries}
+    task_statuses: dict[str, list[str]] = {entry_id: [] for entry_id in local_entries}
+    primary_keys: dict[str, dict[str, str]] = {}
 
     proxy.start()
     try:
-        log.info(
-            "round=%s: starting npabench mission=%s seed=%s entries=%s",
-            round_id,
-            roster.get("mission_id", MISSION_ID),
-            seed,
-            len(agent_specs),
-        )
-        batch_report = evaluate_multiple_agents(
-            agent_specs,
-            mission_id=roster.get("mission_id", MISSION_ID),
-            seed=seed,
-            output_dir=workspace / "npabench_results",
-            record=True,
-            agent_mode=AgentMode.SANDBOXED,
-            max_parallel=MAX_PARALLEL_AGENTS,
-            sidecar_containers=sidecar_containers,
-        )
+        for task_index in range(TASKS_PER_ROUND):
+            seed = _per_validator_seed(round_id, mission_id, validator_hotkey)
+            agent_specs = [
+                AgentSpec(
+                    name=entry["spec_name"],
+                    path=entry["agent_dir"],
+                    env=sessions[(entry_id, task_index)].env,
+                )
+                for entry_id, entry in local_entries.items()
+            ]
+            log.info(
+                "round=%s task=%s/%s: starting npabench mission=%s seed=%s entries=%s",
+                round_id,
+                task_index + 1,
+                TASKS_PER_ROUND,
+                mission_id,
+                seed,
+                len(agent_specs),
+            )
+            batch_report = evaluate_multiple_agents(
+                agent_specs,
+                mission_id=mission_id,
+                seed=seed,
+                output_dir=workspace / f"task_{task_index}",
+                record=True,
+                agent_mode=AgentMode.SANDBOXED,
+                max_parallel=MAX_PARALLEL_AGENTS,
+                sidecar_containers=sidecar_containers,
+            )
+
+            for entry_id, entry in local_entries.items():
+                report = batch_report.agents[entry["spec_name"]]
+                _write_proxy_usage(
+                    report, proxy.read_usage(sessions[(entry_id, task_index)].session_id)
+                )
+                report_path = report.output_dir / "report.json"
+                if not report_path.exists():
+                    raise RuntimeError(
+                        f"missing report.json for entry {entry_id} task {task_index}"
+                    )
+                recording_path = _ensure_recording_file(report)
+
+                # Per-task artifacts get their own storage path via a task-suffixed
+                # entry_id (the backend derives the key from entry_id, so this needs
+                # no API change). The scoreboard row references task 0's keys.
+                artifact_entry_id = f"{entry_id}__t{task_index}"
+                report_slot = api.request_artifact_slot(
+                    round_id=round_id,
+                    validator_uid=validator_uid,
+                    entry_id=artifact_entry_id,
+                    entry_kind=entry["entry_kind"],
+                    miner_uid=entry["miner_uid"],
+                    miner_hotkey=entry["miner_hotkey"],
+                    artifact_kind="report_json",
+                )
+                recording_slot = api.request_artifact_slot(
+                    round_id=round_id,
+                    validator_uid=validator_uid,
+                    entry_id=artifact_entry_id,
+                    entry_kind=entry["entry_kind"],
+                    miner_uid=entry["miner_uid"],
+                    miner_hotkey=entry["miner_hotkey"],
+                    artifact_kind="recording_mcpr",
+                )
+                api.upload_bytes(report_slot["upload_url"], report_path.read_bytes())
+                api.upload_bytes(recording_slot["upload_url"], recording_path.read_bytes())
+
+                task_scores[entry_id].append(float(report.score))
+                task_statuses[entry_id].append(report.status)
+                if task_index == 0:
+                    primary_keys[entry_id] = {
+                        "report_s3_key": report_slot["storage_key"],
+                        "recording_s3_key": recording_slot["storage_key"],
+                    }
+                log.info(
+                    "round=%s task=%s entry=%s score=%s status=%s",
+                    round_id,
+                    task_index,
+                    entry_id,
+                    float(report.score),
+                    report.status,
+                )
     finally:
         proxy.stop()
 
+    # Aggregate the per-task scores into one scoreboard row per entry. The mean
+    # smooths per-seed luck; consensus then stake-averages these across validators
+    # exactly as before (it still sees a single score per entry).
     rows: list[dict] = []
     for entry_id, entry in local_entries.items():
-        report = batch_report.agents[entry["spec_name"]]
-        _write_proxy_usage(report, proxy.read_usage(session_ids[entry_id]))
-        report_path = report.output_dir / "report.json"
-        if not report_path.exists():
-            raise RuntimeError(f"missing report.json for entry {entry_id}")
-        recording_path = _ensure_recording_file(report)
-
-        report_slot = api.request_artifact_slot(
-            round_id=round_id,
-            validator_uid=validator_uid,
-            entry_id=entry_id,
-            entry_kind=entry["entry_kind"],
-            miner_uid=entry["miner_uid"],
-            miner_hotkey=entry["miner_hotkey"],
-            artifact_kind="report_json",
-        )
-        recording_slot = api.request_artifact_slot(
-            round_id=round_id,
-            validator_uid=validator_uid,
-            entry_id=entry_id,
-            entry_kind=entry["entry_kind"],
-            miner_uid=entry["miner_uid"],
-            miner_hotkey=entry["miner_hotkey"],
-            artifact_kind="recording_mcpr",
-        )
-
-        api.upload_bytes(report_slot["upload_url"], report_path.read_bytes())
-        api.upload_bytes(recording_slot["upload_url"], recording_path.read_bytes())
-        log.info(
-            "round=%s: uploaded artifacts entry=%s score=%s status=%s",
-            round_id,
-            entry_id,
-            float(report.score),
-            report.status,
-        )
-
+        scores = task_scores[entry_id]
+        final_score = sum(scores) / len(scores) if scores else 0.0
+        keys = primary_keys[entry_id]
         rows.append(
             {
                 "entry_id": entry_id,
@@ -208,11 +248,18 @@ def run_round_evaluation(wallet, api: APIClient, round_state: dict) -> dict:
                 "miner_hotkey": entry["miner_hotkey"],
                 "submission_id": entry.get("submission_id"),
                 "source_round_id": entry.get("source_round_id"),
-                "score": float(report.score),
-                "status": report.status,
-                "report_s3_key": report_slot["storage_key"],
-                "recording_s3_key": recording_slot["storage_key"],
+                "score": final_score,
+                "status": _aggregate_status(task_statuses[entry_id]),
+                "report_s3_key": keys["report_s3_key"],
+                "recording_s3_key": keys["recording_s3_key"],
             }
+        )
+        log.info(
+            "round=%s entry=%s task_scores=%s final_score=%s",
+            round_id,
+            entry_id,
+            scores,
+            final_score,
         )
 
     log.info("round=%s: uploading scoreboard rows=%s", round_id, len(rows))

@@ -92,10 +92,11 @@ All knobs:
 | `NPA_EVALUATION_START_CUTOFF_RATIO` | `0.5` | Skip evaluation if the validator starts after this fraction of the round |
 | `NPA_WORKSPACE_ROOT` | `/tmp/npa_validator` | Local validator round workspace |
 | `NPA_MAX_PARALLEL_AGENTS` | `4` | Parallel npabench agent slots |
+| `NPA_TASKS_PER_ROUND` | `3` | Task instances (distinct seeds) evaluated per miner per round; the scoreboard score is the mean across them. Evaluation time and LLM spend scale ~linearly with this. |
 | `OPENROUTER_API_KEY` / `CHUTES_API_KEY` | unset | Provider keys — production should fund both; one key limits miners to that provider |
 | `NPA_PROXY_PORT` | `8080` | Container-internal port the proxy listens on (not published to the host) |
 | _(allowlist)_ | — | Pinned in `docker/proxy/model_pairs.json` (also cross-provider model map) |
-| `NPA_PROXY_MAX_TOTAL_SPEND_USD` | `0.05` | Max total proxy spend per miner run |
+| `NPA_PROXY_MAX_TOTAL_SPEND_USD` | `0.01` | Max proxy spend per miner *per task*; total per round is `NPA_TASKS_PER_ROUND` x this |
 | _(model prices)_ | — | Pinned per-provider in `docker/proxy/model_pairs.json` |
 | `NPABENCH_PROMPT_PROVIDER` | `openrouter` | Provider used for task prompt generation (`openrouter` or `chutes`) |
 | `NPABENCH_PROMPT_MODEL` | `openai/gpt-4.1-mini` | Model id for task prompt generation |
