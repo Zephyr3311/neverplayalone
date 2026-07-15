@@ -23,6 +23,8 @@ def _load_dotenv() -> None:
 _load_dotenv()
 
 import logging  # noqa: E402
+from logging.handlers import QueueHandler, QueueListener  # noqa: E402
+from queue import SimpleQueue  # noqa: E402
 
 from shared import chain  # noqa: E402
 from shared.api_client import APIClient  # noqa: E402
@@ -30,13 +32,34 @@ from validator.config import API_URL, NETUID, NETWORK, PROXY_PORT  # noqa: E402
 from validator.loop import main_loop  # noqa: E402
 
 
+_LOG_QUEUE: SimpleQueue[logging.LogRecord] | None = None
+_LOG_LISTENER: QueueListener | None = None
+
+
 def _setup_logging() -> None:
+    global _LOG_QUEUE, _LOG_LISTENER
+
     level = os.environ.get("NPA_LOG_LEVEL", "INFO").upper()
     level_value = getattr(logging, level, logging.INFO)
+
+    if _LOG_LISTENER is None:
+        _LOG_QUEUE = SimpleQueue()
+        output_handler = logging.StreamHandler(sys.stdout)
+        output_handler.setFormatter(
+            logging.Formatter(
+                "%(asctime)s %(levelname)s %(name)s: %(message)s",
+                datefmt="%H:%M:%S",
+            )
+        )
+        _LOG_LISTENER = QueueListener(_LOG_QUEUE, output_handler)
+        _LOG_LISTENER.start()
+
+    # Keep application logging asynchronous.  A blocked PM2 log pipe must not
+    # prevent the batch coordinator from recording results or advancing to the
+    # next evaluation.
     logging.basicConfig(
         level=level_value,
-        format="%(asctime)s %(levelname)s %(name)s: %(message)s",
-        datefmt="%H:%M:%S",
+        handlers=[QueueHandler(_LOG_QUEUE)],
         force=True,
     )
     prefixes = ("npa", "validator", "shared", "npabench")
