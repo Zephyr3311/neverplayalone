@@ -3,7 +3,9 @@ set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 UPDATE_SCRIPT="${ROOT_DIR}/scripts/validator_update.sh"
+SETUP_SCRIPT="${ROOT_DIR}/scripts/validator_setup.sh"
 BENCH_DIR="${ROOT_DIR}/vendor/neverplayalone_bench"
+VENV_DIR="${ROOT_DIR}/.venv"
 
 if [[ -f "${ROOT_DIR}/.env" ]]; then
   set -a
@@ -32,7 +34,11 @@ Permanent loop that:
      - vendor/neverplayalone_bench (default: origin/main)
   2. updates/restarts only when the current block is within
      NPA_UPDATE_EARLY_WINDOW_BLOCKS blocks before the next round start
-  3. delegates the actual update to validator_update.sh
+  3. on subnet drift, delegates the full update to validator_update.sh
+     (which also re-syncs the bench via validator_setup.sh)
+  4. on bench-only drift, syncs vendor/neverplayalone_bench to its tracked
+     ref directly (not gated behind the subnet fast-forward) and restarts
+     the validator
 
 Environment:
   NPA_VALIDATOR_PM2_NAME=validator       PM2 validator app to start/restart
@@ -159,6 +165,83 @@ run_update() {
   log "validator update complete"
 }
 
+find_uv() {
+  if require uv; then command -v uv; return 0; fi
+  if [[ -x "${HOME}/.local/bin/uv" ]]; then echo "${HOME}/.local/bin/uv"; return 0; fi
+  return 1
+}
+
+# Sync the vendored bench checkout to its tracked ref directly, without going
+# through validator_update.sh's subnet fast-forward. This keeps a bench-only
+# update from being blocked by a dirty or diverged subnet worktree.
+sync_bench() {
+  if [[ ! -d "${BENCH_DIR}/.git" ]]; then
+    # No checkout yet: this is a first-time install, which validator_setup.sh
+    # owns (clone + editable install + recorder deps). Delegate rather than
+    # duplicate the clone URL and dependency wiring here.
+    log "bench checkout missing; delegating to full setup ${SETUP_SCRIPT}"
+    ( cd "$ROOT_DIR"; "$SETUP_SCRIPT" )
+    return
+  fi
+
+  log "syncing bench directly ref=${BENCH_REF} dir=${BENCH_DIR}"
+  git -C "$BENCH_DIR" fetch --prune --tags origin >/dev/null 2>&1 || true
+  # Prefer the remote-tracking ref so a branch pin advances; fall back to a
+  # plain ref for tags and commit SHAs. --force overwrites tracked files but
+  # leaves untracked build output (e.g. recorder node_modules) in place.
+  if ! ( git -C "$BENCH_DIR" checkout --force --detach --quiet "origin/${BENCH_REF}" 2>/dev/null \
+         || git -C "$BENCH_DIR" checkout --force --detach --quiet "$BENCH_REF" ); then
+    log "bench checkout failed ref=${BENCH_REF}"
+    return 1
+  fi
+  log "bench synced to $(git -C "$BENCH_DIR" rev-parse --short HEAD)"
+
+  # Refresh the editable install and recorder deps so dependency or entrypoint
+  # changes in the new bench revision take effect (mirrors validator_setup.sh).
+  # Best-effort: a pure code change still applies after the validator restart.
+  local bench_uv
+  if bench_uv="$(find_uv)"; then
+    if ! ( export VIRTUAL_ENV="$VENV_DIR"; "$bench_uv" pip install -e "$BENCH_DIR" ); then
+      log "warning: bench editable reinstall failed; validator may run stale bench deps"
+    fi
+  else
+    log "uv not found on PATH; skipped bench editable reinstall"
+  fi
+  if require npm; then
+    if ! ( cd "${BENCH_DIR}/tools/recorder" && npm install ); then
+      log "warning: recorder npm install failed"
+    fi
+  else
+    log "npm not found; skipped recorder dependency refresh"
+  fi
+  return 0
+}
+
+start_validator_pm2() {
+  (
+    cd "$ROOT_DIR"
+    pm2 start "$VALIDATOR_ENTRYPOINT" \
+      --name "$VALIDATOR_PM2_NAME" \
+      --interpreter "$VALIDATOR_INTERPRETER" \
+      --cwd "$ROOT_DIR" \
+      --update-env
+  )
+}
+
+restart_validator() {
+  if ! require pm2; then
+    log "pm2 not found; skipped validator restart validator_pm2=${VALIDATOR_PM2_NAME}"
+    return 0
+  fi
+  if pm2 describe "$VALIDATOR_PM2_NAME" >/dev/null 2>&1; then
+    log "restarting validator PM2 process validator_pm2=${VALIDATOR_PM2_NAME}"
+    pm2 restart "$VALIDATOR_PM2_NAME" --update-env
+    return 0
+  fi
+  log "starting validator PM2 process validator_pm2=${VALIDATOR_PM2_NAME} entrypoint=${VALIDATOR_ENTRYPOINT}"
+  start_validator_pm2
+}
+
 ensure_validator_pm2() {
   if [[ "$AUTOSTART_VALIDATOR" != "1" ]]; then
     log "validator autostart disabled validator_pm2=${VALIDATOR_PM2_NAME}"
@@ -174,14 +257,7 @@ ensure_validator_pm2() {
   fi
 
   log "starting validator PM2 process validator_pm2=${VALIDATOR_PM2_NAME} entrypoint=${VALIDATOR_ENTRYPOINT}"
-  (
-    cd "$ROOT_DIR"
-    pm2 start "$VALIDATOR_ENTRYPOINT" \
-      --name "$VALIDATOR_PM2_NAME" \
-      --interpreter "$VALIDATOR_INTERPRETER" \
-      --cwd "$ROOT_DIR" \
-      --update-env
-  )
+  start_validator_pm2
 }
 
 main() {
@@ -213,10 +289,22 @@ main() {
     if [[ "$subnet_drift" -eq 1 || "$bench_drift" -eq 1 ]]; then
       if window_msg="$(in_prestart_window 2>&1)"; then
         log "$window_msg"
-        if run_update; then
-          :
+        if [[ "$subnet_drift" -eq 1 ]]; then
+          # Subnet drift runs the full update, which also re-syncs the bench
+          # through validator_setup.sh.
+          if run_update; then
+            :
+          else
+            log "update attempt failed"
+          fi
         else
-          log "update attempt failed"
+          # Bench-only drift: sync the vendored bench directly so it is not
+          # gated behind the subnet fast-forward, then restart the validator.
+          if sync_bench; then
+            restart_validator
+          else
+            log "bench sync failed"
+          fi
         fi
       else
         log "update pending but skipped: ${window_msg}"

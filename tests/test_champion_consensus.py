@@ -6,6 +6,7 @@ from validator.loop import (
     _evaluation_cutoff_block,
     _previous_round_replacement,
     _process_consensus,
+    _process_weight_updates,
     _select_winner,
     _weight_epoch_index,
     _weighted_entry_scores,
@@ -162,6 +163,7 @@ class _FakeAPI:
         self._margin = margin
         self.consensus = None
         self.banned_hotkeys: set[str] = set()
+        self.ban_on_final_check: str | None = None
         self.scoreboards_by_round: dict[str, list[dict]] = {}
         self.rosters: dict[str, dict] = {}
 
@@ -180,8 +182,11 @@ class _FakeAPI:
             "policy_hash": "test-policy",
             "hotkeys": {
                 hotkey: {
-                    "banned": hotkey in self.banned_hotkeys,
-                    "reason": "cheating" if hotkey in self.banned_hotkeys else None,
+                    "banned": hotkey in self.banned_hotkeys
+                    or (len(hotkeys) == 1 and hotkey == self.ban_on_final_check),
+                    "reason": "cheating"
+                    if hotkey in self.banned_hotkeys or hotkey == self.ban_on_final_check
+                    else None,
                 }
                 for hotkey in hotkeys
             },
@@ -282,6 +287,91 @@ def test_banned_reigning_champion_falls_back_to_previous_round_runner_up(monkeyp
     api.scoreboards_by_round["previous"] = _champion_scoreboards(champion_score=20.0, challenger_score=10.0)
 
     assert _previous_round_replacement(api, "current") == (8, "Y")
+
+
+def test_weight_worker_records_consensus_only_after_weights_are_set(monkeypatch):
+    weights = []
+    _patch_chain(monkeypatch, weights)
+    state = _round_state()
+    api = _FakeAPI(_champion_scoreboards(champion_score=10.0, challenger_score=20.0), margin=5.0)
+    consensus_rounds: set[str] = set()
+    round_winners: dict[str, tuple[int, str]] = {}
+    weight_epochs: set[tuple[str, int]] = set()
+
+    _process_weight_updates(
+        _FakeWallet(),
+        api,
+        state,
+        current_block=state["scoreboard_deadline_block"],
+        consensus_rounds=consensus_rounds,
+        round_winners=round_winners,
+        weight_epochs=weight_epochs,
+    )
+
+    assert weights == [8]
+    assert consensus_rounds == {state["round_id"]}
+    assert round_winners == {state["round_id"]: (8, "Y")}
+    assert weight_epochs == {(state["round_id"], 4)}
+
+
+def test_weight_worker_retries_when_winner_is_banned_after_consensus(monkeypatch):
+    weights = []
+    _patch_chain(monkeypatch, weights)
+    state = _round_state()
+    api = _FakeAPI(_champion_scoreboards(champion_score=10.0, challenger_score=20.0), margin=5.0)
+    api.ban_on_final_check = "Y"
+    consensus_rounds: set[str] = set()
+    round_winners: dict[str, tuple[int, str]] = {}
+    weight_epochs: set[tuple[str, int]] = set()
+
+    _process_weight_updates(
+        _FakeWallet(),
+        api,
+        state,
+        current_block=state["scoreboard_deadline_block"],
+        consensus_rounds=consensus_rounds,
+        round_winners=round_winners,
+        weight_epochs=weight_epochs,
+    )
+
+    assert weights == []
+    assert consensus_rounds == set()
+    assert round_winners == {}
+    assert weight_epochs == set()
+
+
+def test_weight_worker_uses_previous_round_runner_up_when_champion_is_banned(monkeypatch):
+    weights = []
+    _patch_chain(monkeypatch, weights)
+    state = _round_state()
+    api = _FakeAPI(_champion_scoreboards(champion_score=20.0, challenger_score=10.0), margin=0.0)
+    api.banned_hotkeys.add("X")
+    api.rosters = {
+        state["round_id"]: {
+            "previous_round_id": "previous",
+            "entries": [_entry("champion:1:s1", "champion_defense", 7, 0.0, "X")],
+        },
+        "previous": {"freeze_block_hash": None},
+    }
+    api.scoreboards_by_round["previous"] = _champion_scoreboards(champion_score=20.0, challenger_score=10.0)
+    consensus_rounds: set[str] = set()
+    round_winners: dict[str, tuple[int, str]] = {}
+    weight_epochs: set[tuple[str, int]] = set()
+
+    _process_weight_updates(
+        _FakeWallet(),
+        api,
+        state,
+        current_block=state["evaluation_start_block"],
+        consensus_rounds=consensus_rounds,
+        round_winners=round_winners,
+        weight_epochs=weight_epochs,
+    )
+
+    assert weights == [8]
+    assert consensus_rounds == set()
+    assert round_winners == {}
+    assert weight_epochs == {(state["round_id"], 0)}
 
 
 def _capture_weight_call(monkeypatch, captured):

@@ -215,8 +215,13 @@ pm2 start ./scripts/validator_autoupdate.sh --name validator-updater --interpret
 3. only proceeds when the validator is in the **pre-start window**:
    within `NPA_UPDATE_EARLY_WINDOW_BLOCKS` blocks (default `50`) before the
    current submission round's `evaluation_start_block`
-4. runs `validator_update.sh --pm2-name <name>`; the update script restarts
-   that PM2 process, or starts the validator if the process is missing
+4. applies the update, then restarts (or starts) that PM2 process:
+   - **subnet drift** runs `validator_update.sh --pm2-name <name>`, which also
+     re-syncs `vendor/neverplayalone_bench` via `validator_setup.sh`
+   - a **bench-only change** (subnet unchanged) syncs the vendored bench
+     checkout directly to its tracked ref — no subnet fast-forward required, so
+     a dirty or diverged subnet worktree can't block it — and restarts the
+     validator
 
 On boot, `validator_autoupdate.sh` also ensures the validator process exists
 under `NPA_VALIDATOR_PM2_NAME` by starting `validator/main.py` with the repo

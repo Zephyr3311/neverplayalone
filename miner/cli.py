@@ -15,8 +15,8 @@ app = typer.Typer(help="Never Play Alone subnet CLI")
 def _configure_chain_network() -> None:
     if chain.NETWORK == NPA_NETWORK:
         return
+    chain.close_subtensor()
     chain.NETWORK = NPA_NETWORK
-    chain._subtensor = None
 
 
 @app.command()
@@ -41,6 +41,7 @@ def submit(
         result = api.finalize_submission(slot["submission_id"])
     finally:
         api.close()
+        chain.close_subtensor()
 
     typer.echo(f"submission_id: {result['submission_id']}")
     typer.echo(f"round_id:      {result['round_id']}")

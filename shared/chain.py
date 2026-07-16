@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import logging
 import os
+import threading
 from typing import TYPE_CHECKING, Any, Optional
 
 NETUID = int(os.environ.get("NPA_NETUID", "98"))
@@ -13,7 +14,7 @@ log = logging.getLogger(__name__)
 if TYPE_CHECKING:
     import bittensor as bt
 
-_subtensor: Optional[Any] = None
+_subtensor_local = threading.local()
 
 
 def _bt():
@@ -31,12 +32,34 @@ def _resolve_ctor(bt, *names: str):
 
 
 def get_subtensor() -> "bt.subtensor":
-    global _subtensor
-    if _subtensor is None:
+    """Return the calling thread's Subtensor client.
+
+    Validator evaluation and weight updates run on separate threads. The SDK
+    client owns mutable websocket state, so sharing one instance would require
+    serializing all RPCs and would let a slow weight submission stall evaluation.
+    """
+    subtensor = getattr(_subtensor_local, "client", None)
+    if subtensor is None:
         bt = _bt()
         subtensor_ctor = _resolve_ctor(bt, "subtensor", "Subtensor")
-        _subtensor = subtensor_ctor(network=NETWORK)
-    return _subtensor
+        subtensor = subtensor_ctor(network=NETWORK)
+        _subtensor_local.client = subtensor
+    return subtensor
+
+
+def close_subtensor() -> None:
+    """Close and forget the calling thread's Subtensor client, if any."""
+    subtensor = getattr(_subtensor_local, "client", None)
+    if subtensor is None:
+        return
+    try:
+        close = getattr(subtensor, "close", None)
+        if callable(close):
+            close()
+    except Exception:
+        log.warning("failed to close subtensor client", exc_info=True)
+    finally:
+        del _subtensor_local.client
 
 
 def make_wallet(name: str = "default", hotkey: str = "default") -> "bt.wallet":
@@ -144,6 +167,7 @@ def set_winner_weights(
     burn_rate: float = 0.0,
     burn_uid: int = 0,
 ) -> None:
+    subtensor = get_subtensor()
     metagraph = get_metagraph()
     count = len(metagraph.hotkeys)
     raw_uids = list(range(count))
@@ -163,7 +187,7 @@ def set_winner_weights(
                 uids=uids,
                 weights=weights,
                 netuid=NETUID,
-                subtensor=get_subtensor(),
+                subtensor=subtensor,
                 metagraph=metagraph,
             )
         )
@@ -171,7 +195,7 @@ def set_winner_weights(
         log.warning("weight preprocessing unavailable, falling back to raw weights: %s", exc)
         emit_uids, emit_weights = raw_uids, raw_weights
 
-    get_subtensor().set_weights(
+    subtensor.set_weights(
         wallet=wallet,
         netuid=NETUID,
         uids=emit_uids,

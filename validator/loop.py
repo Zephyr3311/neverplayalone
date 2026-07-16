@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import logging
+import threading
 import time
 from typing import Optional
 
@@ -288,161 +289,217 @@ def _set_round_weights(
     return True
 
 
-def main_loop(wallet, api: APIClient) -> None:
-    evaluated_rounds: set[str] = set()
-    skipped_evaluation_rounds: set[str] = set()
-    consensus_rounds: set[str] = set()
-    round_winners: dict[str, tuple[int, str]] = {}
-    weight_epochs: set[tuple[str, int]] = set()
-    log.info("loop started")
+def _process_weight_updates(
+    wallet,
+    api: APIClient,
+    evaluating_round: dict,
+    current_block: int,
+    *,
+    consensus_rounds: set[str],
+    round_winners: dict[str, tuple[int, str]],
+    weight_epochs: set[tuple[str, int]],
+) -> None:
+    round_id = evaluating_round["round_id"]
+    _, deadline_block, _ = _round_blocks(evaluating_round)
 
-    while True:
-        current_block = chain.current_block()
+    if current_block >= deadline_block and round_id not in consensus_rounds:
         try:
-            rounds = api.get_current_rounds()
+            log.info(
+                "round=%s: starting consensus current_block=%s deadline_block=%s",
+                round_id,
+                current_block,
+                deadline_block,
+            )
+            winner = _process_consensus(wallet, api, evaluating_round, set_weights=False)
+            if winner is not None:
+                epoch_index = _weight_epoch_index(evaluating_round, current_block)
+                weights_set = _set_round_weights(
+                    wallet,
+                    api,
+                    round_id=round_id,
+                    winner=winner,
+                    source="current_consensus",
+                    epoch_index=epoch_index,
+                )
+                if weights_set:
+                    consensus_rounds.add(round_id)
+                    round_winners[round_id] = winner
+                    if epoch_index is not None:
+                        weight_epochs.add((round_id, epoch_index))
         except Exception as exc:
-            log.warning("get_current_rounds failed: %s", exc)
-            time.sleep(LOOP_POLL_SECONDS)
-            continue
+            log.exception("round=%s consensus failed and will retry: %s", round_id, exc)
 
-        evaluating_round = rounds.get("evaluating_round")
-        submission_round = rounds.get("submission_round")
-        log.info(
-            "round_state submission=%s evaluating=%s",
-            submission_round["round_id"] if submission_round else None,
-            evaluating_round["round_id"] if evaluating_round else None,
-        )
-        if evaluating_round:
-            round_id = evaluating_round["round_id"]
-            start_block, deadline_block, end_block = _round_blocks(evaluating_round)
-            cutoff_block = _evaluation_cutoff_block(evaluating_round)
-            if round_id not in evaluated_rounds and round_id not in skipped_evaluation_rounds:
-                try:
-                    if current_block < cutoff_block and current_block < deadline_block:
-                        log.info(
-                            (
-                                "round=%s: starting evaluation current_block=%s "
-                                "start_block=%s cutoff_block=%s deadline_block=%s"
-                            ),
-                            round_id,
-                            current_block,
-                            start_block,
-                            cutoff_block,
-                            deadline_block,
-                        )
-                        run_round_evaluation(wallet, api, evaluating_round)
-                        evaluated_rounds.add(round_id)
-                        log.info("round=%s evaluation uploaded", round_id)
-                    else:
-                        skipped_evaluation_rounds.add(round_id)
-                        log.info(
-                            (
-                                "round=%s: skipping evaluation because validator started late "
-                                "current_block=%s cutoff_block=%s deadline_block=%s end_block=%s"
-                            ),
-                            round_id,
-                            current_block,
-                            cutoff_block,
-                            deadline_block,
-                            end_block,
-                        )
-                except Exception as exc:
-                    log.exception("round=%s evaluation failed: %s", round_id, exc)
+    epoch_index = _weight_epoch_index(evaluating_round, current_block)
+    if epoch_index is None or (round_id, epoch_index) in weight_epochs:
+        return
 
-            current_block = chain.current_block()
-            if current_block >= deadline_block and round_id not in consensus_rounds:
-                try:
+    try:
+        if current_block < deadline_block:
+            if _epoch_end_block(evaluating_round, epoch_index) > deadline_block:
+                log.info(
+                    (
+                        "round=%s: reserving epoch=%s for post-deadline consensus "
+                        "current_block=%s deadline_block=%s"
+                    ),
+                    round_id,
+                    epoch_index,
+                    current_block,
+                    deadline_block,
+                )
+            else:
+                previous_winner = _previous_winner_from_roster(api, round_id)
+                if previous_winner is None:
                     log.info(
-                        "round=%s: starting consensus current_block=%s deadline_block=%s",
+                        "round=%s: no previous champion for epoch weight update epoch=%s",
                         round_id,
-                        current_block,
-                        deadline_block,
+                        epoch_index,
                     )
-                    winner = _process_consensus(wallet, api, evaluating_round, set_weights=False)
-                    if winner is not None:
-                        epoch_index = _weight_epoch_index(evaluating_round, current_block)
-                        weights_set = _set_round_weights(
-                            wallet,
-                            api,
-                            round_id=round_id,
-                            winner=winner,
-                            source="current_consensus",
-                            epoch_index=epoch_index,
-                        )
-                        if weights_set:
-                            consensus_rounds.add(round_id)
-                            round_winners[round_id] = winner
-                            if epoch_index is not None:
-                                weight_epochs.add((round_id, epoch_index))
-                except Exception as exc:
-                    log.exception("round=%s consensus failed and will retry: %s", round_id, exc)
-
-            epoch_index = _weight_epoch_index(evaluating_round, current_block)
-            if epoch_index is not None and (round_id, epoch_index) not in weight_epochs:
-                try:
-                    if current_block < deadline_block:
-                        if _epoch_end_block(evaluating_round, epoch_index) > deadline_block:
-                            log.info(
-                                (
-                                    "round=%s: reserving epoch=%s for post-deadline consensus "
-                                    "current_block=%s deadline_block=%s"
-                                ),
-                                round_id,
-                                epoch_index,
-                                current_block,
-                                deadline_block,
-                            )
-                        else:
-                            previous_winner = _previous_winner_from_roster(api, round_id)
-                            if previous_winner is None:
-                                log.info(
-                                    "round=%s: no previous champion for epoch weight update epoch=%s",
-                                    round_id,
-                                    epoch_index,
-                                )
-                            else:
-                                weights_set = _set_round_weights(
-                                    wallet,
-                                    api,
-                                    round_id=round_id,
-                                    winner=previous_winner,
-                                    source="previous_consensus",
-                                    epoch_index=epoch_index,
-                                )
-                                if not weights_set:
-                                    replacement = _previous_round_replacement(api, round_id)
-                                    if replacement is not None:
-                                        weights_set = _set_round_weights(
-                                            wallet,
-                                            api,
-                                            round_id=round_id,
-                                            winner=replacement,
-                                            source="previous_round_reconsensus",
-                                            epoch_index=epoch_index,
-                                        )
-                                if weights_set:
-                                    weight_epochs.add((round_id, epoch_index))
-                    else:
-                        winner = round_winners.get(round_id)
-                        if winner is not None:
-                            if _set_round_weights(
+                else:
+                    weights_set = _set_round_weights(
+                        wallet,
+                        api,
+                        round_id=round_id,
+                        winner=previous_winner,
+                        source="previous_consensus",
+                        epoch_index=epoch_index,
+                    )
+                    if not weights_set:
+                        replacement = _previous_round_replacement(api, round_id)
+                        if replacement is not None:
+                            weights_set = _set_round_weights(
                                 wallet,
                                 api,
                                 round_id=round_id,
-                                winner=winner,
-                                source="current_consensus",
+                                winner=replacement,
+                                source="previous_round_reconsensus",
                                 epoch_index=epoch_index,
-                            ):
-                                weight_epochs.add((round_id, epoch_index))
-                            else:
-                                consensus_rounds.discard(round_id)
-                                round_winners.pop(round_id, None)
-                except Exception as exc:
-                    log.exception(
-                        "round=%s epoch weight update failed epoch=%s: %s",
-                        round_id,
-                        epoch_index,
-                        exc,
-                    )
+                            )
+                    if weights_set:
+                        weight_epochs.add((round_id, epoch_index))
+        else:
+            winner = round_winners.get(round_id)
+            if winner is not None:
+                if _set_round_weights(
+                    wallet,
+                    api,
+                    round_id=round_id,
+                    winner=winner,
+                    source="current_consensus",
+                    epoch_index=epoch_index,
+                ):
+                    weight_epochs.add((round_id, epoch_index))
+                else:
+                    consensus_rounds.discard(round_id)
+                    round_winners.pop(round_id, None)
+    except Exception as exc:
+        log.exception(
+            "round=%s epoch weight update failed epoch=%s: %s",
+            round_id,
+            epoch_index,
+            exc,
+        )
 
-        time.sleep(LOOP_POLL_SECONDS)
+
+def _weight_worker(wallet, base_url: str, stop_event: threading.Event) -> None:
+    api = APIClient(wallet, base_url=base_url)
+    consensus_rounds: set[str] = set()
+    round_winners: dict[str, tuple[int, str]] = {}
+    weight_epochs: set[tuple[str, int]] = set()
+    log.info("weight worker started")
+    try:
+        while not stop_event.is_set():
+            try:
+                current_block = chain.current_block()
+                rounds = api.get_current_rounds()
+                evaluating_round = rounds.get("evaluating_round")
+                if evaluating_round:
+                    _process_weight_updates(
+                        wallet,
+                        api,
+                        evaluating_round,
+                        current_block,
+                        consensus_rounds=consensus_rounds,
+                        round_winners=round_winners,
+                        weight_epochs=weight_epochs,
+                    )
+            except Exception as exc:
+                log.exception("weight worker iteration failed: %s", exc)
+            stop_event.wait(LOOP_POLL_SECONDS)
+    finally:
+        api.close()
+        chain.close_subtensor()
+        log.info("weight worker stopped")
+
+
+def main_loop(wallet, api: APIClient) -> None:
+    evaluated_rounds: set[str] = set()
+    skipped_evaluation_rounds: set[str] = set()
+    stop_event = threading.Event()
+    weight_thread = threading.Thread(
+        target=_weight_worker,
+        name="npa-weight-worker",
+        args=(wallet, api.base_url, stop_event),
+        daemon=True,
+    )
+    weight_thread.start()
+    log.info("evaluation loop started")
+
+    try:
+        while True:
+            current_block = chain.current_block()
+            try:
+                rounds = api.get_current_rounds()
+            except Exception as exc:
+                log.warning("get_current_rounds failed: %s", exc)
+                time.sleep(LOOP_POLL_SECONDS)
+                continue
+
+            evaluating_round = rounds.get("evaluating_round")
+            submission_round = rounds.get("submission_round")
+            log.info(
+                "round_state submission=%s evaluating=%s",
+                submission_round["round_id"] if submission_round else None,
+                evaluating_round["round_id"] if evaluating_round else None,
+            )
+            if evaluating_round:
+                round_id = evaluating_round["round_id"]
+                start_block, deadline_block, end_block = _round_blocks(evaluating_round)
+                cutoff_block = _evaluation_cutoff_block(evaluating_round)
+                if round_id not in evaluated_rounds and round_id not in skipped_evaluation_rounds:
+                    try:
+                        if current_block < cutoff_block and current_block < deadline_block:
+                            log.info(
+                                (
+                                    "round=%s: starting evaluation current_block=%s "
+                                    "start_block=%s cutoff_block=%s deadline_block=%s"
+                                ),
+                                round_id,
+                                current_block,
+                                start_block,
+                                cutoff_block,
+                                deadline_block,
+                            )
+                            run_round_evaluation(wallet, api, evaluating_round)
+                            evaluated_rounds.add(round_id)
+                            log.info("round=%s evaluation uploaded", round_id)
+                        else:
+                            skipped_evaluation_rounds.add(round_id)
+                            log.info(
+                                (
+                                    "round=%s: skipping evaluation because validator started late "
+                                    "current_block=%s cutoff_block=%s deadline_block=%s end_block=%s"
+                                ),
+                                round_id,
+                                current_block,
+                                cutoff_block,
+                                deadline_block,
+                                end_block,
+                            )
+                    except Exception as exc:
+                        log.exception("round=%s evaluation failed: %s", round_id, exc)
+
+            time.sleep(LOOP_POLL_SECONDS)
+    finally:
+        stop_event.set()
+        weight_thread.join(timeout=LOOP_POLL_SECONDS + 1)
+        chain.close_subtensor()
