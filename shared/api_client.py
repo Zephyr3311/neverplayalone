@@ -94,6 +94,9 @@ class APIClient:
     def get_round_roster(self, round_id: str) -> dict:
         return self._get_signed(f"/validator/rounds/{round_id}/roster")
 
+    def hotkey_eligibility(self, hotkeys: list[str]) -> dict:
+        return self._post_signed("/validator/hotkeys/eligibility", {"hotkeys": hotkeys})
+
     def download_bytes(self, url: str) -> bytes:
         response = self._client.get(url)
         response.raise_for_status()

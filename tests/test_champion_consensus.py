@@ -4,6 +4,7 @@ import validator.loop as loop
 from validator.loop import (
     _epoch_end_block,
     _evaluation_cutoff_block,
+    _previous_round_replacement,
     _process_consensus,
     _select_winner,
     _weight_epoch_index,
@@ -160,16 +161,31 @@ class _FakeAPI:
         self._scoreboards = scoreboards
         self._margin = margin
         self.consensus = None
+        self.banned_hotkeys: set[str] = set()
+        self.scoreboards_by_round: dict[str, list[dict]] = {}
+        self.rosters: dict[str, dict] = {}
 
     def list_round_scoreboards(self, round_id):
-        return self._scoreboards
+        return self.scoreboards_by_round.get(round_id, self._scoreboards)
 
     def get_round_roster(self, round_id):
-        return {"champion_margin": self._margin}
+        return {"champion_margin": self._margin, **self.rosters.get(round_id, {})}
 
     def upload_consensus_result(self, **kwargs):
         self.consensus = kwargs
         return {}
+
+    def hotkey_eligibility(self, hotkeys):
+        return {
+            "policy_hash": "test-policy",
+            "hotkeys": {
+                hotkey: {
+                    "banned": hotkey in self.banned_hotkeys,
+                    "reason": "cheating" if hotkey in self.banned_hotkeys else None,
+                }
+                for hotkey in hotkeys
+            },
+        }
 
 
 def _champion_scoreboards(champion_score, challenger_score):
@@ -240,6 +256,32 @@ def test_process_consensus_sets_challenger_uid_when_dethroned(monkeypatch):
     assert api.consensus["winner_entry_kind"] == "submission"
     assert weights == [8]
     assert result == (8, "Y")
+
+
+def test_process_consensus_excludes_banned_winner(monkeypatch):
+    weights = []
+    _patch_chain(monkeypatch, weights)
+    api = _FakeAPI(_champion_scoreboards(champion_score=10.0, challenger_score=20.0), margin=0.0)
+    api.banned_hotkeys.add("Y")
+
+    result = _process_consensus(_FakeWallet(), api, {"round_id": "2026-07-06-AM"})
+
+    assert result == (7, "X")
+    assert api.consensus["top_miner_hotkey"] == "X"
+    assert weights == [7]
+
+
+def test_banned_reigning_champion_falls_back_to_previous_round_runner_up(monkeypatch):
+    monkeypatch.setattr(loop.chain, "stake_by_hotkey", lambda block=None: {})
+    api = _FakeAPI(_champion_scoreboards(champion_score=20.0, challenger_score=10.0), margin=0.0)
+    api.banned_hotkeys.add("X")
+    api.rosters = {
+        "current": {"previous_round_id": "previous"},
+        "previous": {"freeze_block_hash": None},
+    }
+    api.scoreboards_by_round["previous"] = _champion_scoreboards(champion_score=20.0, challenger_score=10.0)
+
+    assert _previous_round_replacement(api, "current") == (8, "Y")
 
 
 def _capture_weight_call(monkeypatch, captured):

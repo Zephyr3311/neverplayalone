@@ -90,6 +90,20 @@ class APIClientTests(unittest.TestCase):
         self.assertIsNone(body)
         self.assertIsNone(headers)
 
+    def test_hotkey_eligibility_is_signed(self) -> None:
+        client = APIClient(_FakeWallet(), base_url="http://127.0.0.1:8000")
+        http_client = _RecordingHTTPClient()
+        client._client = http_client
+
+        client.hotkey_eligibility(["miner-a", "miner-b"])
+
+        method, url, headers, body = http_client.calls[0]
+        self.assertEqual(method, "POST")
+        self.assertEqual(url, "http://127.0.0.1:8000/validator/hotkeys/eligibility")
+        self.assertEqual(json.loads(body), {"hotkeys": ["miner-a", "miner-b"]})
+        assert headers is not None
+        self.assertEqual(headers["X-Hotkey"], "hotkey-1")
+
     def test_upload_put_accepts_empty_non_json_response(self) -> None:
         client = APIClient(_FakeWallet(), base_url="http://127.0.0.1:8000")
         http_client = _RecordingHTTPClient()

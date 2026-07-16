@@ -94,6 +94,58 @@ def _round_margin(api: APIClient, round_id: str) -> float:
     return 0.0
 
 
+def _eligible_entries(api: APIClient, entries: dict[str, dict]) -> dict[str, dict]:
+    """Remove miners banned by the shared API policy before ranking consensus."""
+    hotkeys = sorted({str(entry["miner_hotkey"]) for entry in entries.values()})
+    if not hotkeys:
+        return {}
+    policy = api.hotkey_eligibility(hotkeys)
+    decisions = policy.get("hotkeys")
+    policy_hash = policy.get("policy_hash")
+    if not isinstance(decisions, dict) or not isinstance(policy_hash, str) or not policy_hash:
+        raise RuntimeError("invalid hotkey eligibility response")
+
+    eligible: dict[str, dict] = {}
+    for entry_id, entry in entries.items():
+        hotkey = str(entry["miner_hotkey"])
+        decision = decisions.get(hotkey)
+        if not isinstance(decision, dict) or not isinstance(decision.get("banned"), bool):
+            raise RuntimeError(f"eligibility response missing hotkey {hotkey}")
+        if decision["banned"]:
+            log.warning(
+                "consensus candidate excluded entry=%s miner_uid=%s miner_hotkey=%s reason=%s policy_hash=%s",
+                entry_id,
+                entry["miner_uid"],
+                hotkey,
+                decision.get("reason") or "hotkey is banned",
+                policy_hash,
+            )
+            continue
+        eligible[entry_id] = entry
+    return eligible
+
+
+def _hotkey_is_eligible(api: APIClient, hotkey: str) -> bool:
+    """Check a weight target immediately before issuing the on-chain update."""
+    policy = api.hotkey_eligibility([hotkey])
+    decisions = policy.get("hotkeys")
+    policy_hash = policy.get("policy_hash")
+    decision = decisions.get(hotkey) if isinstance(decisions, dict) else None
+    if not isinstance(policy_hash, str) or not policy_hash or not isinstance(decision, dict):
+        raise RuntimeError(f"invalid eligibility response for hotkey {hotkey}")
+    if decision.get("banned") is True:
+        log.error(
+            "weight target denied miner_hotkey=%s reason=%s policy_hash=%s",
+            hotkey,
+            decision.get("reason") or "hotkey is banned",
+            policy_hash,
+        )
+        return False
+    if decision.get("banned") is not False:
+        raise RuntimeError(f"invalid eligibility decision for hotkey {hotkey}")
+    return True
+
+
 def _process_consensus(
     wallet,
     api: APIClient,
@@ -104,8 +156,9 @@ def _process_consensus(
     round_id = round_state["round_id"]  # date-based string id, e.g. "2026-07-06-AM"
     scoreboards = api.list_round_scoreboards(round_id)
     entries = _weighted_entry_scores(scoreboards, round_state.get("freeze_block_hash"))
+    entries = _eligible_entries(api, entries)
     if not entries:
-        log.info("round=%s: no valid scoreboards yet for consensus", round_id)
+        log.info("round=%s: no eligible scoreboards yet for consensus", round_id)
         return None
 
     winner, champion_kept = _select_winner(entries, _round_margin(api, round_id))
@@ -126,8 +179,17 @@ def _process_consensus(
         source_round_id=winner.get("source_round_id"),
         champion_kept=champion_kept,
     )
+    weights_set = False
     if set_weights:
-        chain.set_winner_weights(wallet, winner_uid, burn_rate=BURN_RATE, burn_uid=BURN_UID)
+        weights_set = _set_round_weights(
+            wallet,
+            api,
+            round_id=round_id,
+            winner=(winner_uid, winner_hotkey),
+            source="current_consensus",
+        )
+        if not weights_set:
+            return None
     log.info(
         (
             "round=%s consensus winner uid=%s hotkey=%s entry=%s champion_kept=%s "
@@ -138,7 +200,7 @@ def _process_consensus(
         winner_hotkey,
         winner["entry_id"],
         champion_kept,
-        set_weights,
+        weights_set,
         BURN_RATE,
         BURN_UID,
     )
@@ -181,15 +243,37 @@ def _previous_winner_from_roster(api: APIClient, round_id: str) -> Optional[tupl
     return None
 
 
+def _previous_round_replacement(api: APIClient, round_id: str) -> Optional[tuple[int, str]]:
+    """Re-consensus the previous round when its champion was later banned."""
+    current_roster = api.get_round_roster(round_id)
+    previous_round_id = current_roster.get("previous_round_id")
+    if not isinstance(previous_round_id, str) or not previous_round_id:
+        log.error("round=%s: cannot find previous round for banned champion replacement", round_id)
+        return None
+
+    previous_roster = api.get_round_roster(previous_round_id)
+    scoreboards = api.list_round_scoreboards(previous_round_id)
+    entries = _weighted_entry_scores(scoreboards, previous_roster.get("freeze_block_hash"))
+    entries = _eligible_entries(api, entries)
+    replacement, _ = _select_winner(entries, _round_margin(api, previous_round_id))
+    if replacement is None:
+        log.error("round=%s: no eligible previous-round replacement", round_id)
+        return None
+    return int(replacement["miner_uid"]), str(replacement["miner_hotkey"])
+
+
 def _set_round_weights(
     wallet,
+    api: APIClient,
     *,
     round_id: str,
     winner: tuple[int, str],
     source: str,
     epoch_index: int | None = None,
-) -> None:
+) -> bool:
     winner_uid, winner_hotkey = winner
+    if not _hotkey_is_eligible(api, winner_hotkey):
+        return False
     chain.set_winner_weights(wallet, winner_uid, burn_rate=BURN_RATE, burn_uid=BURN_UID)
     log.info(
         "round=%s weights set source=%s epoch=%s winner_uid=%s winner_hotkey=%s burn_rate=%.4f burn_uid=%s",
@@ -201,6 +285,7 @@ def _set_round_weights(
         BURN_RATE,
         BURN_UID,
     )
+    return True
 
 
 def main_loop(wallet, api: APIClient) -> None:
@@ -275,18 +360,20 @@ def main_loop(wallet, api: APIClient) -> None:
                     )
                     winner = _process_consensus(wallet, api, evaluating_round, set_weights=False)
                     if winner is not None:
-                        consensus_rounds.add(round_id)
-                        round_winners[round_id] = winner
                         epoch_index = _weight_epoch_index(evaluating_round, current_block)
-                        _set_round_weights(
+                        weights_set = _set_round_weights(
                             wallet,
+                            api,
                             round_id=round_id,
                             winner=winner,
                             source="current_consensus",
                             epoch_index=epoch_index,
                         )
-                        if epoch_index is not None:
-                            weight_epochs.add((round_id, epoch_index))
+                        if weights_set:
+                            consensus_rounds.add(round_id)
+                            round_winners[round_id] = winner
+                            if epoch_index is not None:
+                                weight_epochs.add((round_id, epoch_index))
                 except Exception as exc:
                     log.exception("round=%s consensus failed and will retry: %s", round_id, exc)
 
@@ -314,25 +401,42 @@ def main_loop(wallet, api: APIClient) -> None:
                                     epoch_index,
                                 )
                             else:
-                                _set_round_weights(
+                                weights_set = _set_round_weights(
                                     wallet,
+                                    api,
                                     round_id=round_id,
                                     winner=previous_winner,
                                     source="previous_consensus",
                                     epoch_index=epoch_index,
                                 )
-                                weight_epochs.add((round_id, epoch_index))
+                                if not weights_set:
+                                    replacement = _previous_round_replacement(api, round_id)
+                                    if replacement is not None:
+                                        weights_set = _set_round_weights(
+                                            wallet,
+                                            api,
+                                            round_id=round_id,
+                                            winner=replacement,
+                                            source="previous_round_reconsensus",
+                                            epoch_index=epoch_index,
+                                        )
+                                if weights_set:
+                                    weight_epochs.add((round_id, epoch_index))
                     else:
                         winner = round_winners.get(round_id)
                         if winner is not None:
-                            _set_round_weights(
+                            if _set_round_weights(
                                 wallet,
+                                api,
                                 round_id=round_id,
                                 winner=winner,
                                 source="current_consensus",
                                 epoch_index=epoch_index,
-                            )
-                            weight_epochs.add((round_id, epoch_index))
+                            ):
+                                weight_epochs.add((round_id, epoch_index))
+                            else:
+                                consensus_rounds.discard(round_id)
+                                round_winners.pop(round_id, None)
                 except Exception as exc:
                     log.exception(
                         "round=%s epoch weight update failed epoch=%s: %s",
