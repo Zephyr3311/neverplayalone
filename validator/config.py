@@ -14,6 +14,10 @@ EVALUATION_START_CUTOFF_RATIO = float(
     os.environ.get("NPA_EVALUATION_START_CUTOFF_RATIO", "0.5")
 )
 WORKSPACE_ROOT = os.environ.get("NPA_WORKSPACE_ROOT", "/tmp/npa_validator")
+# Keep only the most recent N round workspaces under WORKSPACE_ROOT; older ones
+# are pruned at the start of each evaluation so validator disk use stays bounded.
+# 1 keeps just the active round; raise it to retain recent rounds for debugging.
+WORKSPACE_RETAIN_ROUNDS = int(os.environ.get("NPA_WORKSPACE_RETAIN_ROUNDS", "1"))
 MAX_PARALLEL_AGENTS = int(os.environ.get("NPA_MAX_PARALLEL_AGENTS", "4"))
 # Number of task instances (distinct seeds) each miner is evaluated on per round.
 # The per-entry scoreboard score is the mean across these tasks, which smooths

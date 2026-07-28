@@ -12,7 +12,13 @@ from pathlib import Path, PurePosixPath
 from shared import chain
 from shared.api_client import APIClient
 
-from validator.config import MAX_PARALLEL_AGENTS, MISSION_ID, TASKS_PER_ROUND, WORKSPACE_ROOT
+from validator.config import (
+    MAX_PARALLEL_AGENTS,
+    MISSION_ID,
+    TASKS_PER_ROUND,
+    WORKSPACE_RETAIN_ROUNDS,
+    WORKSPACE_ROOT,
+)
 from validator.proxy import ProxyContainer
 
 log = logging.getLogger(__name__)
@@ -26,6 +32,28 @@ def _workspace(round_id: str) -> Path:
     root = Path(WORKSPACE_ROOT).resolve() / f"round_{round_id}"
     root.mkdir(parents=True, exist_ok=True)
     return root
+
+
+def _prune_round_workspaces(keep_round_id: str, retain: int) -> None:
+    """Delete stale ``round_*`` workspaces so validator disk use stays bounded.
+
+    Keeps the active round plus the ``retain - 1`` most recently modified other
+    rounds (by mtime); everything older is removed. Safe because evaluation is
+    single-threaded — no other round's workspace is live when this runs.
+    """
+    root = Path(WORKSPACE_ROOT).resolve()
+    if not root.exists():
+        return
+    retain = max(1, retain)
+    keep_dir = root / f"round_{keep_round_id}"
+    others = sorted(
+        (p for p in root.glob("round_*") if p.is_dir() and p != keep_dir),
+        key=lambda p: p.stat().st_mtime,
+    )
+    doomed = others[: max(0, len(others) - (retain - 1))]
+    for path in doomed:
+        shutil.rmtree(path, ignore_errors=True)
+        log.info("round=%s: pruned stale workspace %s", keep_round_id, path.name)
 
 
 def _safe_extract_tar_gz(payload: bytes, dest: Path) -> None:
@@ -108,6 +136,7 @@ def run_round_evaluation(wallet, api: APIClient, round_state: dict) -> dict:
     log.info("round=%s: fetching roster", round_id)
     roster = api.get_round_roster(round_id)
     workspace = _workspace(round_id)
+    _prune_round_workspaces(round_id, WORKSPACE_RETAIN_ROUNDS)
     log.info("round=%s: workspace=%s", round_id, workspace)
     local_entries = _materialize_agents(api, roster, workspace)
     log.info("round=%s: materialized %s roster entries", round_id, len(local_entries))
@@ -229,6 +258,14 @@ def run_round_evaluation(wallet, api: APIClient, round_state: dict) -> dict:
                     float(report.score),
                     report.status,
                 )
+
+            # The per-task reference world is pure scratch once every agent in
+            # the task has run and its artifacts are uploaded; drop it here so
+            # the biggest scratch item never survives to the end of the round.
+            shutil.rmtree(
+                workspace / f"task_{task_index}" / "reference_world",
+                ignore_errors=True,
+            )
     finally:
         proxy.stop()
 

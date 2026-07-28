@@ -91,6 +91,7 @@ All knobs:
 | `NPA_WEIGHT_EPOCH_BLOCKS` | `360` | Round-relative block interval for validator weight updates |
 | `NPA_EVALUATION_START_CUTOFF_RATIO` | `0.5` | Skip evaluation if the validator starts after this fraction of the round |
 | `NPA_WORKSPACE_ROOT` | `/tmp/npa_validator` | Local validator round workspace |
+| `NPA_WORKSPACE_RETAIN_ROUNDS` | `1` | Round workspaces to keep under `NPA_WORKSPACE_ROOT`; older ones are pruned at the start of each evaluation. `1` keeps only the active round; raise to retain recent rounds for debugging |
 | `NPA_MAX_PARALLEL_AGENTS` | `4` | Parallel npabench agent slots |
 | `NPA_TASKS_PER_ROUND` | `3` | Task instances (distinct seeds) evaluated per miner per round; the scoreboard score is the mean across them. Evaluation time and LLM spend scale ~linearly with this. |
 | `OPENROUTER_API_KEY` / `CHUTES_API_KEY` | unset | Provider keys — production should fund both; one key limits miners to that provider |
@@ -142,8 +143,12 @@ Minecraft server and the sandboxed miner agents.
    epoch containing the scoreboard deadline is reserved for this post-deadline
    consensus update.
 
-Round workspaces live under `NPA_WORKSPACE_ROOT` (one directory per round)
-and can be deleted after a round completes.
+Round workspaces live under `NPA_WORKSPACE_ROOT` (one directory per round).
+The validator prunes them automatically: at the start of each evaluation it
+keeps only the most recent `NPA_WORKSPACE_RETAIN_ROUNDS` rounds (default the
+active round only) and deletes older ones, and it drops each task's scratch
+`reference_world` as soon as that task's artifacts upload. Disk use therefore
+stays bounded without manual cleanup.
 
 ## The LLM proxy
 
