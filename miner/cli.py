@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import httpx
 import typer
 
 from shared import chain
@@ -17,6 +18,28 @@ def _configure_chain_network() -> None:
         return
     chain.close_subtensor()
     chain.NETWORK = NPA_NETWORK
+
+
+def _friendly_http_error(exc: httpx.HTTPStatusError) -> str:
+    """Render a backend HTTP error as a concise miner-facing message.
+
+    The backend replies with a JSON body like ``{"detail": "hotkey is banned:
+    ..."}``; the raw httpx traceback hides it. Pull that detail out and, for a
+    ban, present the reason on its own line instead of a stack trace.
+    """
+    detail = None
+    try:
+        body = exc.response.json()
+        if isinstance(body, dict):
+            detail = body.get("detail")
+    except Exception:
+        detail = None
+    if not detail:
+        detail = (exc.response.text or "").strip() or f"HTTP {exc.response.status_code}"
+    ban_prefix = "hotkey is banned: "
+    if isinstance(detail, str) and detail.startswith(ban_prefix):
+        return f"Your hotkey is banned.\nreason: {detail[len(ban_prefix):]}"
+    return f"submission failed: {detail}"
 
 
 @app.command()
@@ -39,6 +62,12 @@ def submit(
         slot = api.create_submission_slot(miner_uid=miner_uid, filename=archive_path.name)
         api.upload_submission_file(slot["upload_url"], archive_path)
         result = api.finalize_submission(slot["submission_id"])
+    except httpx.HTTPStatusError as exc:
+        typer.echo(_friendly_http_error(exc), err=True)
+        raise typer.Exit(1)
+    except httpx.RequestError as exc:
+        typer.echo(f"failed to reach {api.base_url}: {exc}", err=True)
+        raise typer.Exit(1)
     finally:
         api.close()
         chain.close_subtensor()
@@ -59,8 +88,6 @@ def status(
     api_url: str = typer.Option(None, "--api", help="Override the configured API URL"),
 ) -> None:
     """Show the current submission round from the backend."""
-    import httpx
-
     url = (api_url or API_URL).rstrip("/")
     try:
         response = httpx.get(f"{url}/miner/rounds/current", timeout=10.0)
