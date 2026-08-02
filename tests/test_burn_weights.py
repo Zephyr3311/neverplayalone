@@ -41,6 +41,13 @@ def test_no_winner_and_no_burn_emits_nothing():
     assert sum(weights) == 0.0
 
 
+def test_full_burn_puts_all_weight_on_burn_uid():
+    # The exact vector _burn_round_weights emits: no winner, burn_rate=1.0.
+    weights = compute_weight_vector(4, winner_uid=None, burn_rate=1.0, burn_uid=0)
+    assert _as_map(weights) == {0: 1.0}
+    assert round(sum(weights), 6) == 1.0
+
+
 def test_burn_rate_is_clamped_to_one():
     weights = compute_weight_vector(4, winner_uid=2, burn_rate=1.5, burn_uid=0)
     assert weights[0] == 1.0

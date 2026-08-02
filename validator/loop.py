@@ -289,6 +289,31 @@ def _set_round_weights(
     return True
 
 
+def _burn_round_weights(
+    wallet,
+    round_id: str,
+    *,
+    source: str,
+    epoch_index: int | None = None,
+) -> None:
+    """Assign the full weight to ``BURN_UID`` when no eligible winner exists.
+
+    Fallback for the no-consensus case — no reigning champion to carry
+    pre-deadline, or consensus yielded no eligible entry at all. Rather than
+    leave stale weights on chain, the round's emission is burned to the owner
+    UID. Deterministic across validators (every one burns the same way), so it
+    never causes weight divergence.
+    """
+    chain.set_winner_weights(wallet, None, burn_rate=1.0, burn_uid=BURN_UID)
+    log.info(
+        "round=%s weights burned to uid=%s source=%s epoch=%s (no eligible winner)",
+        round_id,
+        BURN_UID,
+        source,
+        epoch_index,
+    )
+
+
 def _process_weight_updates(
     wallet,
     api: APIClient,
@@ -326,6 +351,17 @@ def _process_weight_updates(
                     round_winners[round_id] = winner
                     if epoch_index is not None:
                         weight_epochs.add((round_id, epoch_index))
+            else:
+                # Consensus produced no eligible winner (e.g. every entry banned
+                # or an empty roster): burn this epoch's emission rather than
+                # leave stale weights on chain. Not marked consensus-complete, so
+                # a winner that appears later still takes over.
+                epoch_index = _weight_epoch_index(evaluating_round, current_block)
+                if epoch_index is not None and (round_id, epoch_index) not in weight_epochs:
+                    _burn_round_weights(
+                        wallet, round_id, source="no_consensus", epoch_index=epoch_index
+                    )
+                    weight_epochs.add((round_id, epoch_index))
         except Exception as exc:
             log.exception("round=%s consensus failed and will retry: %s", round_id, exc)
 
@@ -348,13 +384,8 @@ def _process_weight_updates(
                 )
             else:
                 previous_winner = _previous_winner_from_roster(api, round_id)
-                if previous_winner is None:
-                    log.info(
-                        "round=%s: no previous champion for epoch weight update epoch=%s",
-                        round_id,
-                        epoch_index,
-                    )
-                else:
+                weights_set = False
+                if previous_winner is not None:
                     weights_set = _set_round_weights(
                         wallet,
                         api,
@@ -374,8 +405,14 @@ def _process_weight_updates(
                                 source="previous_round_reconsensus",
                                 epoch_index=epoch_index,
                             )
-                    if weights_set:
-                        weight_epochs.add((round_id, epoch_index))
+                if not weights_set:
+                    # No eligible winner to carry pre-deadline (no reigning
+                    # champion, or it and its previous-round replacement are
+                    # banned): burn this epoch rather than leave stale weights.
+                    _burn_round_weights(
+                        wallet, round_id, source="no_consensus", epoch_index=epoch_index
+                    )
+                weight_epochs.add((round_id, epoch_index))
         else:
             winner = round_winners.get(round_id)
             if winner is not None:
