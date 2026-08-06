@@ -73,6 +73,9 @@ class APIClient:
     def get_miner_current_round(self) -> dict:
         return self._get("/miner/rounds/current")
 
+    def get_hotkey_usage(self) -> dict:
+        return self._get_signed("/miner/hotkeys/usage")
+
     def create_submission_slot(self, miner_uid: int, filename: str) -> dict:
         return self._post_signed(
             "/miner/submissions/slot",

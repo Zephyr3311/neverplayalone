@@ -84,6 +84,40 @@ def submit(
 
 
 @app.command()
+def usage(
+    wallet_name: str = typer.Option("default", "--wallet", help="Bittensor wallet name"),
+    wallet_hotkey: str = typer.Option("default", "--hotkey", help="Bittensor hotkey name"),
+    api_url: str = typer.Option(None, "--api", help="Override the configured API URL"),
+) -> None:
+    """Show this hotkey's submission usage and ban state from the backend."""
+    _configure_chain_network()
+    wallet = chain.make_wallet(wallet_name, wallet_hotkey)
+    api = APIClient(wallet, base_url=(api_url or API_URL))
+    try:
+        data = api.get_hotkey_usage()
+    except httpx.HTTPStatusError as exc:
+        typer.echo(_friendly_http_error(exc), err=True)
+        raise typer.Exit(1)
+    except httpx.RequestError as exc:
+        typer.echo(f"failed to reach {api.base_url}: {exc}", err=True)
+        raise typer.Exit(1)
+    finally:
+        api.close()
+        chain.close_subtensor()
+
+    typer.echo(f"hotkey:        {data['hotkey']}")
+    typer.echo(f"banned:        {data['banned']}")
+    if data.get("banned"):
+        typer.echo(f"ban_reason:    {data.get('ban_reason')}")
+    typer.echo(f"use_count:     {data['use_count']}/{data['max_uses']}")
+    typer.echo(f"remaining:     {data['remaining']}")
+    used_rounds = data.get("used_rounds") or []
+    typer.echo(f"used_rounds:   {', '.join(used_rounds) or '(none)'}")
+    typer.echo(f"current_round: {data.get('current_round_id') or '(unknown)'}")
+    typer.echo(f"can_submit:    {data['can_submit']}")
+
+
+@app.command()
 def status(
     api_url: str = typer.Option(None, "--api", help="Override the configured API URL"),
 ) -> None:
