@@ -410,7 +410,7 @@ def test_process_consensus_defaults_to_no_burn_when_unconfigured(monkeypatch):
     assert captured == {"uid": 8, "burn_rate": 0.0, "burn_uid": 0}
 
 
-def test_weight_worker_burns_pre_deadline_when_no_previous_champion(monkeypatch):
+def test_weight_worker_skips_pre_deadline_when_no_champion_and_nothing_saved(monkeypatch):
     monkeypatch.setattr(loop, "BURN_UID", 0)
     captured = {}
     _capture_weight_call(monkeypatch, captured)
@@ -430,14 +430,15 @@ def test_weight_worker_burns_pre_deadline_when_no_previous_champion(monkeypatch)
         weight_epochs=weight_epochs,
     )
 
-    # Burned to UID 0 (winner_uid=None, burn_rate=1.0) instead of abstaining.
-    assert captured == {"uid": None, "burn_rate": 1.0, "burn_uid": 0}
+    # No champion and no locally-saved winner (isolated per test) -> weights left
+    # unchanged (no burn). The epoch is still marked handled.
+    assert captured == {}
     assert weight_epochs == {(state["round_id"], 0)}
     assert consensus_rounds == set()
     assert round_winners == {}
 
 
-def test_weight_worker_burns_post_deadline_when_consensus_has_no_winner(monkeypatch):
+def test_weight_worker_skips_post_deadline_when_no_winner_and_nothing_saved(monkeypatch):
     monkeypatch.setattr(loop, "BURN_UID", 0)
     captured = {}
     _capture_weight_call(monkeypatch, captured)
@@ -457,7 +458,8 @@ def test_weight_worker_burns_post_deadline_when_consensus_has_no_winner(monkeypa
         weight_epochs=weight_epochs,
     )
 
-    assert captured == {"uid": None, "burn_rate": 1.0, "burn_uid": 0}
+    # No eligible winner and nothing saved locally -> weights left unchanged.
+    assert captured == {}
     assert weight_epochs == {(state["round_id"], 4)}
     # Not marked consensus-complete, so a late winner can still take over.
     assert consensus_rounds == set()

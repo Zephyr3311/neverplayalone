@@ -219,3 +219,6 @@ __marimo__/
 
 # Vendored npabench checkout (managed by scripts/validator_setup.sh)
 vendor/
+
+# validator runtime state
+npa_last_winner.json

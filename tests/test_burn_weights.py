@@ -42,7 +42,8 @@ def test_no_winner_and_no_burn_emits_nothing():
 
 
 def test_full_burn_puts_all_weight_on_burn_uid():
-    # The exact vector _burn_round_weights emits: no winner, burn_rate=1.0.
+    # compute_weight_vector still supports a full burn (no winner, burn_rate=1.0)
+    # even though the validator loop no longer burns on the no-consensus path.
     weights = compute_weight_vector(4, winner_uid=None, burn_rate=1.0, burn_uid=0)
     assert _as_map(weights) == {0: 1.0}
     assert round(sum(weights), 6) == 1.0

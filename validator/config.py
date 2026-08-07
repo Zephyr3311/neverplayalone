@@ -13,6 +13,12 @@ WEIGHT_EPOCH_BLOCKS = int(os.environ.get("NPA_WEIGHT_EPOCH_BLOCKS", "360"))
 EVALUATION_START_CUTOFF_RATIO = float(
     os.environ.get("NPA_EVALUATION_START_CUTOFF_RATIO", "0.5")
 )
+# Local file persisting the most recent weight target. Reused as the
+# pre-consensus fallback (weight the last winner) instead of burning when no
+# current champion exists — e.g. the first round after a schedule reset, or a
+# no-consensus gap. Kept out of WORKSPACE_ROOT (which is ephemeral) so it
+# survives restarts. Override with NPA_LAST_WINNER_PATH.
+LAST_WINNER_PATH = os.environ.get("NPA_LAST_WINNER_PATH", "npa_last_winner.json")
 WORKSPACE_ROOT = os.environ.get("NPA_WORKSPACE_ROOT", "/tmp/npa_validator")
 # Keep only the most recent N round workspaces under WORKSPACE_ROOT; older ones
 # are pruned at the start of each evaluation so validator disk use stays bounded.

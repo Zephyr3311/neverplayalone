@@ -1,7 +1,9 @@
 """Main validator loop for round-based backend coordination."""
 from __future__ import annotations
 
+import json
 import logging
+import os
 import threading
 import time
 from typing import Optional
@@ -12,12 +14,38 @@ from validator.config import (
     BURN_RATE,
     BURN_UID,
     EVALUATION_START_CUTOFF_RATIO,
+    LAST_WINNER_PATH,
     LOOP_POLL_SECONDS,
     WEIGHT_EPOCH_BLOCKS,
 )
 from validator.round_evaluation import run_round_evaluation
 
 log = logging.getLogger(__name__)
+
+
+def _save_last_winner(uid: int, hotkey: str) -> None:
+    """Persist the most recent real weight target so it can be reused as the
+    pre-consensus fallback (see _set_fallback_weights) across restarts."""
+    try:
+        tmp_path = f"{LAST_WINNER_PATH}.tmp"
+        with open(tmp_path, "w", encoding="utf-8") as handle:
+            json.dump({"uid": int(uid), "hotkey": str(hotkey)}, handle)
+        os.replace(tmp_path, LAST_WINNER_PATH)
+    except Exception as exc:  # non-fatal: fallback simply degrades to burn
+        log.warning("could not persist last winner uid=%s: %s", uid, exc)
+
+
+def _load_last_winner() -> Optional[tuple[int, str]]:
+    """Return the last saved (uid, hotkey) weight target, or None if unavailable."""
+    try:
+        with open(LAST_WINNER_PATH, "r", encoding="utf-8") as handle:
+            data = json.load(handle)
+        return int(data["uid"]), str(data["hotkey"])
+    except FileNotFoundError:
+        return None
+    except Exception as exc:
+        log.warning("could not read last winner file %s: %s", LAST_WINNER_PATH, exc)
+        return None
 
 
 def _weighted_entry_scores(scoreboards: list[dict], freeze_block_hash: str | None) -> dict[str, dict]:
@@ -276,6 +304,7 @@ def _set_round_weights(
     if not _hotkey_is_eligible(api, winner_hotkey):
         return False
     chain.set_winner_weights(wallet, winner_uid, burn_rate=BURN_RATE, burn_uid=BURN_UID)
+    _save_last_winner(winner_uid, winner_hotkey)
     log.info(
         "round=%s weights set source=%s epoch=%s winner_uid=%s winner_hotkey=%s burn_rate=%.4f burn_uid=%s",
         round_id,
@@ -289,29 +318,56 @@ def _set_round_weights(
     return True
 
 
-def _burn_round_weights(
+def _set_fallback_weights(
     wallet,
+    api: Optional[APIClient],
     round_id: str,
     *,
     source: str,
     epoch_index: int | None = None,
-) -> None:
-    """Assign the full weight to ``BURN_UID`` when no eligible winner exists.
+    check_eligibility: bool = True,
+) -> bool:
+    """Weight the last locally-saved winner when no current winner/champion exists.
 
-    Fallback for the no-consensus case — no reigning champion to carry
-    pre-deadline, or consensus yielded no eligible entry at all. Rather than
-    leave stale weights on chain, the round's emission is burned to the owner
-    UID. Deterministic across validators (every one burns the same way), so it
-    never causes weight divergence.
+    Keeps emission flowing to the most recent champion across a schedule reset, a
+    no-consensus gap, or an API outage, rather than leaving weights stale. Returns
+    True when a weight was set. Sets nothing when there is no saved winner, or —
+    when online — the saved winner is no longer eligible. ``check_eligibility`` is
+    disabled on the offline path, where the API cannot be reached to confirm the
+    ban policy.
     """
-    chain.set_winner_weights(wallet, None, burn_rate=1.0, burn_uid=BURN_UID)
+    last = _load_last_winner()
+    if last is None:
+        log.warning("round=%s: no saved winner to fall back to; leaving weights unchanged", round_id)
+        return False
+    uid, hotkey = last
+    if check_eligibility:
+        try:
+            if not _hotkey_is_eligible(api, hotkey):
+                log.warning(
+                    "round=%s: last saved winner uid=%s hotkey=%s no longer eligible; leaving weights unchanged",
+                    round_id,
+                    uid,
+                    hotkey,
+                )
+                return False
+        except Exception as exc:
+            log.warning(
+                "round=%s: last-winner eligibility check failed (%s); leaving weights unchanged",
+                round_id,
+                exc,
+            )
+            return False
+    chain.set_winner_weights(wallet, uid, burn_rate=BURN_RATE, burn_uid=BURN_UID)
     log.info(
-        "round=%s weights burned to uid=%s source=%s epoch=%s (no eligible winner)",
+        "round=%s: weights set to last saved winner uid=%s hotkey=%s source=%s epoch=%s",
         round_id,
-        BURN_UID,
+        uid,
+        hotkey,
         source,
         epoch_index,
     )
+    return True
 
 
 def _process_weight_updates(
@@ -353,13 +409,13 @@ def _process_weight_updates(
                         weight_epochs.add((round_id, epoch_index))
             else:
                 # Consensus produced no eligible winner (e.g. every entry banned
-                # or an empty roster): burn this epoch's emission rather than
-                # leave stale weights on chain. Not marked consensus-complete, so
-                # a winner that appears later still takes over.
+                # or an empty roster): fall back to the last saved winner rather
+                # than leave stale weights. Not marked consensus-complete, so a
+                # winner that appears later still takes over.
                 epoch_index = _weight_epoch_index(evaluating_round, current_block)
                 if epoch_index is not None and (round_id, epoch_index) not in weight_epochs:
-                    _burn_round_weights(
-                        wallet, round_id, source="no_consensus", epoch_index=epoch_index
+                    _set_fallback_weights(
+                        wallet, api, round_id, source="no_consensus", epoch_index=epoch_index
                     )
                     weight_epochs.add((round_id, epoch_index))
         except Exception as exc:
@@ -408,9 +464,10 @@ def _process_weight_updates(
                 if not weights_set:
                     # No eligible winner to carry pre-deadline (no reigning
                     # champion, or it and its previous-round replacement are
-                    # banned): burn this epoch rather than leave stale weights.
-                    _burn_round_weights(
-                        wallet, round_id, source="no_consensus", epoch_index=epoch_index
+                    # banned): reuse the last saved winner, or leave weights
+                    # unchanged if none is saved.
+                    _set_fallback_weights(
+                        wallet, api, round_id, source="no_consensus", epoch_index=epoch_index
                     )
                 weight_epochs.add((round_id, epoch_index))
         else:
@@ -442,12 +499,35 @@ def _weight_worker(wallet, base_url: str, stop_event: threading.Event) -> None:
     consensus_rounds: set[str] = set()
     round_winners: dict[str, tuple[int, str]] = {}
     weight_epochs: set[tuple[str, int]] = set()
+    last_offline_block = None  # throttle for the offline last-winner fallback
+    offline_interval = max(WEIGHT_EPOCH_BLOCKS, 1)
     log.info("weight worker started")
     try:
         while not stop_event.is_set():
             try:
                 current_block = chain.current_block()
+            except Exception as exc:
+                # Chain unreachable: set_weights needs it, so nothing to do.
+                log.warning("weight worker: chain unreachable, skipping: %s", exc)
+                stop_event.wait(LOOP_POLL_SECONDS)
+                continue
+            try:
                 rounds = api.get_current_rounds()
+            except Exception as exc:
+                # API unreachable but chain is up: keep weights fresh by
+                # re-weighting the last saved winner, throttled to ~one weight
+                # epoch so a long outage does not spam set_weights.
+                if last_offline_block is None or current_block - last_offline_block >= offline_interval:
+                    log.warning(
+                        "weight worker: API unreachable (%s); applying offline last-winner fallback", exc
+                    )
+                    if _set_fallback_weights(
+                        wallet, None, "(offline)", source="offline_api_down", check_eligibility=False
+                    ):
+                        last_offline_block = current_block
+                stop_event.wait(LOOP_POLL_SECONDS)
+                continue
+            try:
                 evaluating_round = rounds.get("evaluating_round")
                 if evaluating_round:
                     _process_weight_updates(
