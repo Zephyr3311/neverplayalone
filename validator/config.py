@@ -28,7 +28,7 @@ MAX_PARALLEL_AGENTS = int(os.environ.get("NPA_MAX_PARALLEL_AGENTS", "4"))
 # Number of task instances (distinct seeds) each miner is evaluated on per round.
 # The per-entry scoreboard score is the mean across these tasks, which smooths
 # per-seed luck. Keep this the same on every validator (it is a fixed default).
-TASKS_PER_ROUND = int(os.environ.get("NPA_TASKS_PER_ROUND", "3"))
+TASKS_PER_ROUND = int(os.environ.get("NPA_TASKS_PER_ROUND", "5"))
 BURN_RATE = float(os.environ.get("NPA_BURN_RATE", "0.0"))
 BURN_UID = int(os.environ.get("NPA_BURN_UID", "0"))
 # Port the proxy container listens on inside the sandbox network. It is never
