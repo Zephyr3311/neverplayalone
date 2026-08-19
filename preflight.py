@@ -42,6 +42,16 @@ else:
     blob = arch.read_bytes()
     sha = hashlib.sha256(blob).hexdigest()
     add(OK if arch.name.endswith(".tar.gz") else BAD, "archive name", arch.name)
+    # Guard against submitting a rebuilt archive by mistake: the working tree
+    # carries the v0.3 planner guard that agent_v02.tar.gz deliberately excludes,
+    # so a rebuild from agent/ would silently ship different code.
+    KNOWN = {
+        "56a1a2d52bc929b149ec66bd7ffe930ce5c407a66ee80ff7c134233886f63832":
+            "agent_v02.tar.gz (v0.1+v0.2) - the released version",
+    }
+    add(OK if sha in KNOWN else WARN, "archive identity",
+        KNOWN.get(sha, "UNRECOGNISED build - not one of the two reviewed archives; "
+                       "see npa_agent/SUBMISSION.md before submitting"))
     try:
         from validator.round_evaluation import _safe_extract_tar_gz
         with tempfile.TemporaryDirectory() as d:
