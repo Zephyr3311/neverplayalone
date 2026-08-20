@@ -15,7 +15,7 @@ sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 
 ap = argparse.ArgumentParser()
 ap.add_argument("--wallet", default="cricketminercoldkey")
-ap.add_argument("--hotkey", default="cricketminerhotkey")
+ap.add_argument("--hotkey", default="cricketminerhotkey1")
 ap.add_argument("--archive", default="../npa_agent/agent_v02.tar.gz")
 a = ap.parse_args()
 

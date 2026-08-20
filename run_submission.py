@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Gated round-13 submission flow.
+"""Gated submission flow for the currently open round.
 
 Every step is checked before the next is allowed, and the only irreversible
 actions are refused unless you ask for them explicitly:
@@ -30,7 +30,7 @@ KNOWN_ARCHIVES = {
 
 ap = argparse.ArgumentParser()
 ap.add_argument("--wallet", default="cricketminercoldkey")
-ap.add_argument("--hotkey", default="cricketminerhotkey")
+ap.add_argument("--hotkey", default="cricketminerhotkey1")
 ap.add_argument("--archive", default="../npa_agent/agent_v02.tar.gz")
 ap.add_argument("--submit", action="store_true",
                 help="actually upload (irreversible; consumes a max_uses slot)")
@@ -51,8 +51,18 @@ def finish(code):
 def stop(label, detail):
     line(B, label, detail); blockers.append(f"{label}: {detail}")
 
-print("\n=== Round-13 submission flow ===")
-print(f"    mode: {'SUBMIT (irreversible)' if a.submit else 'DRY RUN (nothing will be uploaded)'}\n")
+# The round label is read live, never hardcoded -- a stale round number in a
+# safety script invites submitting into the wrong window.
+print("\n=== Never Play Alone submission flow ===")
+print(f"    mode: {'SUBMIT (irreversible)' if a.submit else 'DRY RUN (nothing will be uploaded)'}")
+
+import httpx as _httpx
+try:
+    _r = _httpx.get("https://api.neverplayalone.ai/miner/rounds/current", timeout=15.0)
+    _rd = _r.json().get("submission_round") or {}
+    print(f"    round: {_rd.get('round_id')} ({_rd.get('status')})\n")
+except Exception:
+    print("    round: (could not read the round label)\n")
 
 # ---- STEP 1: funds -------------------------------------------------------
 import bittensor as bt
